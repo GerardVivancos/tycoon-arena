@@ -1,0 +1,1 @@
+* "Fira", where each player sets up a faire and can add increasingly cooler attractions (starts with simple things like duck fishing, gets crazy rollercoasters later). Sabotage mechanics are basically straightforward.
