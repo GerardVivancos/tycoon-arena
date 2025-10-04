@@ -12,6 +12,8 @@ var client_id: int = -1
 var tick_rate: int = 20
 var current_tick: int = 0
 var sequence: int = 0
+var heartbeat_interval: float = 2.0  # seconds
+var heartbeat_timer: float = 0.0
 
 func _ready():
 	udp_socket = PacketPeerUDP.new()
@@ -53,7 +55,24 @@ func send_input(commands: Array):
 	}
 	send_message(input_msg)
 
-func _process(_delta):
+func send_ping():
+	if not is_connected:
+		return
+
+	var ping_msg = {
+		"type": "ping",
+		"data": {}
+	}
+	send_message(ping_msg)
+
+func _process(delta):
+	# Handle heartbeat
+	if is_connected:
+		heartbeat_timer += delta
+		if heartbeat_timer >= heartbeat_interval:
+			heartbeat_timer = 0.0
+			send_ping()
+
 	# Check for incoming packets
 	while udp_socket.get_available_packet_count() > 0:
 		var packet = udp_socket.get_packet()
@@ -77,8 +96,11 @@ func handle_message(message: Dictionary):
 func handle_welcome(data: Dictionary):
 	client_id = data.get("clientId", -1)
 	tick_rate = data.get("tickRate", 20)
+	var heartbeat_ms = data.get("heartbeatInterval", 2000)
+	heartbeat_interval = heartbeat_ms / 1000.0  # Convert to seconds
 	is_connected = true
-	print("Connected! Client ID: %d, Tick Rate: %d" % [client_id, tick_rate])
+	heartbeat_timer = 0.0  # Reset timer
+	print("Connected! Client ID: %d, Tick Rate: %d, Heartbeat: %.1fs" % [client_id, tick_rate, heartbeat_interval])
 	connected_to_server.emit(client_id, tick_rate)
 
 func handle_snapshot(data: Dictionary):

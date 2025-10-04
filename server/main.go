@@ -9,12 +9,14 @@ import (
 )
 
 const (
-	ServerPort = ":8080"
-	TickRate   = 20 // 20 Hz
-	MaxClients = 6
-	ArenaWidth = 800
-	ArenaHeight = 600
-	PlayerSpeed = 200.0 // units per second
+	ServerPort        = ":8080"
+	TickRate          = 20    // 20 Hz
+	MaxClients        = 6
+	ArenaWidth        = 800
+	ArenaHeight       = 600
+	PlayerSpeed       = 200.0 // units per second
+	ClientTimeout     = 10 * time.Second // Timeout if no ping/input
+	HeartbeatInterval = 2 * time.Second  // How often clients should ping
 )
 
 type MessageType string
@@ -25,6 +27,8 @@ const (
 	MsgInput    MessageType = "input"
 	MsgSnapshot MessageType = "snapshot"
 	MsgEvent    MessageType = "event"
+	MsgPing     MessageType = "ping"
+	MsgPong     MessageType = "pong"
 )
 
 type Message struct {
@@ -38,8 +42,9 @@ type HelloMessage struct {
 }
 
 type WelcomeMessage struct {
-	ClientId uint32 `json:"clientId"`
-	TickRate int    `json:"tickRate"`
+	ClientId          uint32 `json:"clientId"`
+	TickRate          int    `json:"tickRate"`
+	HeartbeatInterval int    `json:"heartbeatInterval"` // milliseconds
 }
 
 type InputMessage struct {
@@ -133,11 +138,11 @@ func (s *GameServer) gameTick() {
 	s.mu.Lock()
 	s.tick++
 	
-	// Clean up disconnected clients (simple timeout)
+	// Clean up disconnected clients (heartbeat timeout)
 	now := time.Now()
 	for id, client := range s.clients {
-		if now.Sub(client.LastSeen) > 30*time.Second {
-			log.Printf("Client %d (%s) timed out", id, client.Name)
+		if now.Sub(client.LastSeen) > ClientTimeout {
+			log.Printf("Client %d (%s) timed out (no heartbeat/input for %v)", id, client.Name, ClientTimeout)
 			delete(s.clients, id)
 			if client.Entity != nil {
 				delete(s.entities, client.Entity.Id)
@@ -193,7 +198,7 @@ func (s *GameServer) handleMessage(msg Message, clientAddr *net.UDPAddr) {
 			return
 		}
 		s.handleHello(hello, clientAddr)
-		
+
 	case MsgInput:
 		var input InputMessage
 		if err := json.Unmarshal(msg.Data, &input); err != nil {
@@ -201,6 +206,9 @@ func (s *GameServer) handleMessage(msg Message, clientAddr *net.UDPAddr) {
 			return
 		}
 		s.handleInput(input, clientAddr)
+
+	case MsgPing:
+		s.handlePing(clientAddr)
 	}
 }
 
@@ -245,14 +253,42 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 
 	// Send welcome message
 	welcome := WelcomeMessage{
-		ClientId: clientId,
-		TickRate: TickRate,
+		ClientId:          clientId,
+		TickRate:          TickRate,
+		HeartbeatInterval: int(HeartbeatInterval.Milliseconds()),
 	}
 
 	s.sendMessage(Message{
 		Type: MsgWelcome,
 		Data: s.marshalData(welcome),
 	}, clientAddr)
+}
+
+func (s *GameServer) handlePing(clientAddr *net.UDPAddr) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Find client by address
+	var foundClient *Client
+	for _, client := range s.clients {
+		if client.Addr.String() == clientAddr.String() {
+			foundClient = client
+			break
+		}
+	}
+
+	if foundClient != nil {
+		// Update last seen time
+		foundClient.LastSeen = time.Now()
+
+		// Send pong response
+		s.mu.Unlock() // Unlock before sending
+		s.sendMessage(Message{
+			Type: MsgPong,
+			Data: json.RawMessage("{}"),
+		}, clientAddr)
+		s.mu.Lock() // Re-lock for defer
+	}
 }
 
 func (s *GameServer) handleInput(input InputMessage, clientAddr *net.UDPAddr) {

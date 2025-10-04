@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"time"
 )
@@ -15,6 +16,8 @@ const (
 	MsgWelcome  MessageType = "welcome"
 	MsgInput    MessageType = "input"
 	MsgSnapshot MessageType = "snapshot"
+	MsgPing     MessageType = "ping"
+	MsgPong     MessageType = "pong"
 )
 
 type Message struct {
@@ -28,8 +31,9 @@ type HelloMessage struct {
 }
 
 type WelcomeMessage struct {
-	ClientId uint32 `json:"clientId"`
-	TickRate int    `json:"tickRate"`
+	ClientId          uint32 `json:"clientId"`
+	TickRate          int    `json:"tickRate"`
+	HeartbeatInterval int    `json:"heartbeatInterval"`
 }
 
 type InputMessage struct {
@@ -92,7 +96,7 @@ func main() {
 	// Listen for response
 	buffer := make([]byte, 1024)
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	
+
 	n, err := conn.Read(buffer)
 	if err != nil {
 		log.Printf("Error reading response: %v", err)
@@ -108,52 +112,115 @@ func main() {
 	if response.Type == MsgWelcome {
 		var welcome WelcomeMessage
 		json.Unmarshal(response.Data, &welcome)
-		fmt.Printf("Received welcome! ClientId: %d, TickRate: %d\n", welcome.ClientId, welcome.TickRate)
+		fmt.Printf("Received welcome! ClientId: %d, TickRate: %d, Heartbeat: %dms\n",
+			welcome.ClientId, welcome.TickRate, welcome.HeartbeatInterval)
 
-		// Send a move command
-		moveCmd := Command{
-			Type: "move",
-			Data: map[string]float32{"deltaX": 5, "deltaY": 2},
-		}
+		heartbeatInterval := time.Duration(welcome.HeartbeatInterval) * time.Millisecond
 
-		inputMsg := InputMessage{
-			Tick:     1,
-			ClientId: welcome.ClientId,
-			Sequence: 1,
-			Commands: []Command{moveCmd},
-		}
+		// Start heartbeat goroutine
+		stopHeartbeat := make(chan bool)
+		go func() {
+			ticker := time.NewTicker(heartbeatInterval)
+			defer ticker.Stop()
 
-		inputData, _ := json.Marshal(inputMsg)
-		input := Message{
-			Type: MsgInput,
-			Data: json.RawMessage(inputData),
-		}
-
-		inputBytes, _ := json.Marshal(input)
-		conn.Write(inputBytes)
-		fmt.Println("Sent move command")
-
-		// Listen for snapshots
-		for i := 0; i < 3; i++ {
-			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-			n, err := conn.Read(buffer)
-			if err != nil {
-				log.Printf("Error reading snapshot: %v", err)
-				continue
+			for {
+				select {
+				case <-ticker.C:
+					pingMsg := Message{
+						Type: MsgPing,
+						Data: json.RawMessage("{}"),
+					}
+					pingBytes, _ := json.Marshal(pingMsg)
+					conn.Write(pingBytes)
+					fmt.Println("Sent ping")
+				case <-stopHeartbeat:
+					return
+				}
 			}
+		}()
+		defer close(stopHeartbeat)
 
-			var snapMsg Message
-			if err := json.Unmarshal(buffer[:n], &snapMsg); err != nil {
-				log.Printf("Error unmarshaling snapshot: %v", err)
-				continue
+		// Start movement input goroutine
+		var sequence uint32 = 0
+		stopMovement := make(chan bool)
+		go func() {
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			angle := 0.0
+
+			for {
+				select {
+				case <-ticker.C:
+					sequence++
+					angle += 0.2
+
+					// Move in a circular pattern
+					deltaX := float32(3.0 * math.Cos(angle))
+					deltaY := float32(3.0 * math.Sin(angle))
+
+					moveCmd := Command{
+						Type: "move",
+						Data: map[string]float32{"deltaX": deltaX, "deltaY": deltaY},
+					}
+
+					inputMsg := InputMessage{
+						Tick:     uint64(sequence),
+						ClientId: welcome.ClientId,
+						Sequence: sequence,
+						Commands: []Command{moveCmd},
+					}
+
+					inputData, _ := json.Marshal(inputMsg)
+					input := Message{
+						Type: MsgInput,
+						Data: json.RawMessage(inputData),
+					}
+
+					inputBytes, _ := json.Marshal(input)
+					conn.Write(inputBytes)
+				case <-stopMovement:
+					return
+				}
 			}
+		}()
+		defer close(stopMovement)
 
-			if snapMsg.Type == MsgSnapshot {
-				var snapshot SnapshotMessage
-				json.Unmarshal(snapMsg.Data, &snapshot)
-				fmt.Printf("Snapshot tick %d: %d entities\n", snapshot.Tick, len(snapshot.Entities))
-				for _, entity := range snapshot.Entities {
-					fmt.Printf("  Entity %d: %s at (%.1f, %.1f)\n", entity.Id, entity.Type, entity.X, entity.Y)
+		fmt.Println("Sending continuous movement commands (circular pattern)...")
+
+		// Listen for snapshots and pongs
+		timeout := time.After(10 * time.Second)
+		snapshotCount := 0
+		pongCount := 0
+
+		for {
+			select {
+			case <-timeout:
+				fmt.Printf("\nTest complete! Received %d snapshots and %d pongs\n", snapshotCount, pongCount)
+				return
+			default:
+				conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+				n, err := conn.Read(buffer)
+				if err != nil {
+					continue // Timeout is expected
+				}
+
+				var msg Message
+				if err := json.Unmarshal(buffer[:n], &msg); err != nil {
+					continue
+				}
+
+				switch msg.Type {
+				case MsgSnapshot:
+					var snapshot SnapshotMessage
+					json.Unmarshal(msg.Data, &snapshot)
+					snapshotCount++
+					fmt.Printf("Snapshot tick %d: %d entities\n", snapshot.Tick, len(snapshot.Entities))
+					for _, entity := range snapshot.Entities {
+						fmt.Printf("  Entity %d: %s at (%.1f, %.1f)\n", entity.Id, entity.Type, entity.X, entity.Y)
+					}
+				case MsgPong:
+					pongCount++
+					fmt.Print(".")
 				}
 			}
 		}
