@@ -1,6 +1,6 @@
 extends Node
 
-signal connected_to_server(client_id: int, tick_rate: int)
+signal connected_to_server(client_id: int, tick_rate: int, tile_size: int, arena_tiles_width: int, arena_tiles_height: int)
 signal snapshot_received(snapshot: Dictionary)
 signal disconnected_from_server()
 
@@ -16,6 +16,11 @@ var heartbeat_interval: float = 2.0  # seconds
 var heartbeat_timer: float = 0.0
 var input_redundancy: int = 3  # Send last N commands
 var command_history: Array = []  # Store recent commands for redundancy
+
+# Tile configuration (from server)
+var tile_size: int
+var arena_tiles_width: int
+var arena_tiles_height: int
 
 func _ready():
 	udp_socket = PacketPeerUDP.new()
@@ -115,11 +120,15 @@ func handle_welcome(data: Dictionary):
 	var heartbeat_ms = int(data.get("heartbeatInterval", 2000))
 	heartbeat_interval = heartbeat_ms / 1000.0  # Convert to seconds
 	input_redundancy = int(data.get("inputRedundancy", 3))  # Server can configure redundancy
+	tile_size = int(data.get("tileSize"))
+	arena_tiles_width = int(data.get("arenaTilesWidth"))
+	arena_tiles_height = int(data.get("arenaTilesHeight"))
 	is_connected = true
 	heartbeat_timer = 0.0  # Reset timer
 	command_history.clear()  # Clear history on new connection
 	print("Connected! Client ID: %d, Tick Rate: %d, Heartbeat: %.1fs, Redundancy: %d" % [client_id, tick_rate, heartbeat_interval, input_redundancy])
-	connected_to_server.emit(client_id, tick_rate)
+	print("Tile config: Size=%d, Arena=%dx%d tiles" % [tile_size, arena_tiles_width, arena_tiles_height])
+	connected_to_server.emit(client_id, tick_rate, tile_size, arena_tiles_width, arena_tiles_height)
 
 func handle_snapshot(data: Dictionary):
 	current_tick = data.get("tick", 0)

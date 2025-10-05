@@ -184,3 +184,4 @@ Why this combination:
    - produce a 1-page `proto/messages.proto` and a tiny Rust server skeleton (tick loop + UDP accept) and a Godot scene that can connect and exchange Hello/Welcome messages.
 
    Tell me which follow-up you want and I will implement it next.
+- ./launch-all.sh can be used to start the server and some clients

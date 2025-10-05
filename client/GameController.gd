@@ -11,16 +11,26 @@ extends Node2D
 @onready var selection_label = $UI/SelectionLabel
 @onready var event_log = $UI/EventLog
 
+# Tile system (from server via handshake)
+var tile_size: int
+var arena_tiles_width: int
+var arena_tiles_height: int
+
+# Rendering - Isometric
+const PIXELS_PER_TILE = 32  # Visual size of each tile (for top-down, kept for reference)
+const ISO_TILE_WIDTH = 64   # Width of isometric diamond
+const ISO_TILE_HEIGHT = 32  # Height of isometric diamond
+const ISO_OFFSET_X = 400    # Screen offset to center the map
+const ISO_OFFSET_Y = 100
+
 var player_scene = preload("res://Player.tscn")
 var entities: Dictionary = {}  # entity_id -> Player node or Building node
 var local_player: Node = null
 var local_client_id: int = -1
-var input_timer: float = 0.0
-var input_send_rate: float = 0.05  # Send inputs 20 times per second (50ms)
 var local_money: float = 0.0
 var players_data: Dictionary = {}
 var selected_entity_id: int = -1
-var selected_building: Node2D = null  # Reference to selected building for visual feedback
+var selected_building: Node2D = null
 var event_messages: Array = []
 
 func _ready():
@@ -36,10 +46,39 @@ func _ready():
 	# Auto-connect on start
 	network_manager.connect_to_server("Player" + str(randi() % 1000))
 
-func _on_connected_to_server(client_id: int, tick_rate: int):
+func _on_connected_to_server(client_id: int, tick_rate: int, tile_sz: int, tiles_w: int, tiles_h: int):
 	local_client_id = client_id
+	tile_size = tile_sz
+	arena_tiles_width = tiles_w
+	arena_tiles_height = tiles_h
 	connection_label.text = "Connected (ID: %d)" % client_id
-	print("Connected with client ID: %d" % client_id)
+	print("Connected with client ID: %d, Arena: %dx%d tiles" % [client_id, tiles_w, tiles_h])
+	queue_redraw()  # Trigger grid drawing
+
+# Convert tile coordinates to isometric screen position
+func tile_to_iso(tile_x: float, tile_y: float) -> Vector2:
+	# Isometric projection:
+	# iso_x = (tile_x - tile_y) * half_width
+	# iso_y = (tile_x + tile_y) * half_height
+	var iso_x = (tile_x - tile_y) * (ISO_TILE_WIDTH / 2.0)
+	var iso_y = (tile_x + tile_y) * (ISO_TILE_HEIGHT / 2.0)
+	return Vector2(iso_x + ISO_OFFSET_X, iso_y + ISO_OFFSET_Y)
+
+# Convert isometric screen position to tile coordinates
+func iso_to_tile(screen_pos: Vector2) -> Vector2i:
+	# Remove offset
+	var dx = screen_pos.x - ISO_OFFSET_X
+	var dy = screen_pos.y - ISO_OFFSET_Y
+
+	# Inverse isometric projection
+	# From: iso_x = (tx - ty) * w/2, iso_y = (tx + ty) * h/2
+	# Solve: tx = (dx/(w/2) + dy/(h/2)) / 2
+	#        ty = (dy/(h/2) - dx/(w/2)) / 2
+	var tile_x = (dx / (ISO_TILE_WIDTH / 2.0) + dy / (ISO_TILE_HEIGHT / 2.0)) / 2.0
+	var tile_y = (dy / (ISO_TILE_HEIGHT / 2.0) - dx / (ISO_TILE_WIDTH / 2.0)) / 2.0
+
+	# Use floor instead of round - tile (x,y) owns all points where x <= tile_x < x+1
+	return Vector2i(int(floor(tile_x)), int(floor(tile_y)))
 
 func _on_snapshot_received(snapshot: Dictionary):
 	var entities_data = snapshot.get("entities", [])
@@ -55,30 +94,38 @@ func _on_snapshot_received(snapshot: Dictionary):
 	var current_entity_ids = {}
 
 	for entity_data in entities_data:
-		# JSON has no integer type - all numbers are floats
-		# Convert to int for type-safe dictionary keys and comparisons
 		var entity_id = int(entity_data.get("id", -1))
 		var owner_id = int(entity_data.get("ownerId", -1))
 		var entity_type = entity_data.get("type", "")
-		var x = entity_data.get("x", 0.0)
-		var y = entity_data.get("y", 0.0)
-		var health = entity_data.get("health", 100)
-		var max_health = entity_data.get("maxHealth", 100)
-		var width = entity_data.get("width", 0.0)
-		var height = entity_data.get("height", 0.0)
+		var tile_x = int(entity_data.get("tileX", 0))
+		var tile_y = int(entity_data.get("tileY", 0))
+		var target_tile_x = int(entity_data.get("targetTileX", 0))
+		var target_tile_y = int(entity_data.get("targetTileY", 0))
+		var move_progress = float(entity_data.get("moveProgress", 0.0))
+		var health = int(entity_data.get("health", 100))
+		var max_health = int(entity_data.get("maxHealth", 100))
+		var footprint_width = int(entity_data.get("footprintWidth", 0))
+		var footprint_height = int(entity_data.get("footprintHeight", 0))
 
 		current_entity_ids[entity_id] = true
+
+		# Calculate interpolated tile position
+		var interp_tile_x = lerp(float(tile_x), float(target_tile_x), move_progress)
+		var interp_tile_y = lerp(float(tile_y), float(target_tile_y), move_progress)
+
+		# Convert to isometric screen position
+		var screen_pos = tile_to_iso(interp_tile_x, interp_tile_y)
 
 		if entity_type == "player":
 			if entity_id in entities:
 				# Update existing entity
 				var player = entities[entity_id]
-				player.update_from_snapshot(Vector2(x, y), health, max_health)
+				player.update_from_snapshot(screen_pos, health, max_health)
 			else:
 				# Create new entity
 				var player = player_scene.instantiate()
 				var is_local = (owner_id == local_client_id)
-				player.setup(entity_id, owner_id, Vector2(x, y), is_local)
+				player.setup(entity_id, owner_id, screen_pos, is_local)
 
 				if is_local:
 					local_player = player
@@ -88,7 +135,7 @@ func _on_snapshot_received(snapshot: Dictionary):
 
 				entities_container.add_child(player)
 				entities[entity_id] = player
-				print("Spawned player entity %d at (%f, %f)" % [entity_id, x, y])
+				print("Spawned player entity %d at tile (%d, %d) -> screen (%f, %f)" % [entity_id, tile_x, tile_y, screen_pos.x, screen_pos.y])
 
 		elif entity_type == "generator":
 			if entity_id in entities:
@@ -96,11 +143,12 @@ func _on_snapshot_received(snapshot: Dictionary):
 				var building = entities[entity_id]
 				update_building_health(building, health, max_health)
 			else:
-				# Create new building
-				var building = create_building(entity_id, owner_id, Vector2(x, y), width, height, health, max_health)
+				# Create new building at tile corner in isometric space
+				var building_pos = tile_to_iso(float(tile_x), float(tile_y))
+				var building = create_building(entity_id, owner_id, building_pos, footprint_width, footprint_height, health, max_health)
 				entities_container.add_child(building)
 				entities[entity_id] = building
-				print("Spawned generator %d at (%f, %f)" % [entity_id, x, y])
+				print("Spawned generator %d at tile (%d, %d)" % [entity_id, tile_x, tile_y])
 
 	# Remove entities that are no longer in the snapshot
 	for entity_id in entities.keys():
@@ -134,48 +182,55 @@ func _process(delta):
 	# Update FPS
 	fps_label.text = "FPS: %d" % Engine.get_frames_per_second()
 
-	# Handle input and send to server
-	input_timer += delta
-	if input_timer >= input_send_rate:
-		input_timer = 0.0
-		handle_input(input_send_rate)
-
-func handle_input(delta_time: float):
-	if not network_manager.is_connected or local_player == null:
-		return
-
-	# Attack with Q key
-	if Input.is_action_just_pressed("ui_focus_prev"):  # Q key
+func _input(event):
+	# Handle attack with Q key
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_Q:
 		_on_attack_button_pressed()
 
-	var movement = Vector2.ZERO
+func _draw():
+	if tile_size == 0:
+		return
 
-	# Get input
-	if Input.is_action_pressed("ui_up"):
-		movement.y -= 1
-	if Input.is_action_pressed("ui_down"):
-		movement.y += 1
-	if Input.is_action_pressed("ui_left"):
-		movement.x -= 1
-	if Input.is_action_pressed("ui_right"):
-		movement.x += 1
+	# Draw isometric diamond grid
+	for x in range(arena_tiles_width):
+		for y in range(arena_tiles_height):
+			# Get the 4 corners of this tile in isometric space
+			var p1 = tile_to_iso(float(x), float(y))
+			var p2 = tile_to_iso(float(x + 1), float(y))
+			var p3 = tile_to_iso(float(x + 1), float(y + 1))
+			var p4 = tile_to_iso(float(x), float(y + 1))
 
-	# Normalize diagonal movement
-	if movement.length() > 0:
-		movement = movement.normalized()
+			# Draw diamond outline
+			draw_line(p1, p2, Color(0, 1, 0, 0.3), 1.0)
+			draw_line(p2, p3, Color(0, 1, 0, 0.3), 1.0)
+			draw_line(p3, p4, Color(0, 1, 0, 0.3), 1.0)
+			draw_line(p4, p1, Color(0, 1, 0, 0.3), 1.0)
 
-		# Apply client-side prediction
-		local_player.apply_input(movement, delta_time)
+	# Draw origin marker at tile (0,0) center
+	draw_circle(tile_to_iso(0, 0), 5.0, Color(1, 0, 0, 1.0))
 
-		# Send input to server
+func _unhandled_input(event):
+	if not network_manager.is_connected or local_player == null or tile_size == 0:
+		return
+
+	# Click to move
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
+		# Convert isometric click to tile coordinates
+		var click_pos = get_local_mouse_position()
+		var tile_coords = iso_to_tile(click_pos)
+
+		print("Click at local: ", click_pos, " -> tile: ", tile_coords)
+
+		# Send move command
 		var commands = [{
 			"type": "move",
 			"data": {
-				"deltaX": movement.x * 200.0 * delta_time,  # Match server speed
-				"deltaY": movement.y * 200.0 * delta_time
+				"targetTileX": tile_coords.x,
+				"targetTileY": tile_coords.y
 			}
 		}]
 		network_manager.send_input(commands)
+		log_event("Moving to tile (%d, %d)" % [tile_coords.x, tile_coords.y])
 
 func update_player_list():
 	var text = "Players:\n"
@@ -198,7 +253,7 @@ func update_building_health(building: Node2D, health: int, max_health: int):
 		var health_bar = building.get_meta("health_bar")
 		health_bar.value = (float(health) / float(max_health)) * 100.0
 
-func create_building(entity_id: int, owner_id: int, pos: Vector2, width: float, height: float, health: int, max_health: int) -> Node2D:
+func create_building(entity_id: int, owner_id: int, pos: Vector2, footprint_w: int, footprint_h: int, health: int, max_health: int) -> Node2D:
 	var building = Node2D.new()
 	building.position = pos
 	building.set_meta("entity_id", entity_id)
@@ -206,49 +261,91 @@ func create_building(entity_id: int, owner_id: int, pos: Vector2, width: float, 
 	building.set_meta("health", health)
 	building.set_meta("max_health", max_health)
 
-	# Visual representation
-	var rect = ColorRect.new()
-	rect.size = Vector2(width, height)
-	rect.color = Color(1, 0.8, 0, 1) if owner_id == local_client_id else Color(0.8, 0.4, 0, 1)
-	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE  # Let clicks pass through to Area2D!
-	building.add_child(rect)
+	# Visual size based on isometric tile footprint
+	var visual_width = footprint_w * ISO_TILE_WIDTH
+	var visual_height = footprint_h * ISO_TILE_HEIGHT
+	var building_height = 40.0  # 3D height in pixels
 
-	# Health bar
+	# Use Polygon2D to draw isometric box
+	var iso_box = Polygon2D.new()
+	var base_color = Color(1, 0.8, 0, 1) if owner_id == local_client_id else Color(0.8, 0.4, 0, 1)
+
+	# Draw as isometric box (top face + two visible sides)
+	# Top face (diamond shape)
+	var top_points = PackedVector2Array([
+		Vector2(visual_width / 2, 0),                                    # Top
+		Vector2(visual_width, visual_height / 2),                        # Right
+		Vector2(visual_width / 2, visual_height),                        # Bottom
+		Vector2(0, visual_height / 2)                                    # Left
+	])
+	iso_box.polygon = top_points
+	iso_box.color = base_color.lightened(0.2)
+	building.add_child(iso_box)
+
+	# Right face (darker)
+	var right_face = Polygon2D.new()
+	var right_points = PackedVector2Array([
+		Vector2(visual_width, visual_height / 2),
+		Vector2(visual_width, visual_height / 2 + building_height),
+		Vector2(visual_width / 2, visual_height + building_height),
+		Vector2(visual_width / 2, visual_height)
+	])
+	right_face.polygon = right_points
+	right_face.color = base_color.darkened(0.2)
+	building.add_child(right_face)
+
+	# Left face (even darker)
+	var left_face = Polygon2D.new()
+	var left_points = PackedVector2Array([
+		Vector2(0, visual_height / 2),
+		Vector2(visual_width / 2, visual_height),
+		Vector2(visual_width / 2, visual_height + building_height),
+		Vector2(0, visual_height / 2 + building_height)
+	])
+	left_face.polygon = left_points
+	left_face.color = base_color.darkened(0.4)
+	building.add_child(left_face)
+
+	# Health bar (above the building)
 	var health_bar = ProgressBar.new()
-	health_bar.position = Vector2(0, -10)
-	health_bar.size = Vector2(width, 8)
+	health_bar.position = Vector2(0, -15)
+	health_bar.size = Vector2(visual_width, 8)
 	health_bar.max_value = 100
 	health_bar.value = (float(health) / float(max_health)) * 100.0
 	health_bar.show_percentage = false
 	building.add_child(health_bar)
 	building.set_meta("health_bar", health_bar)
 
-	# Label
+	# Label (below the building)
 	var label = Label.new()
 	label.text = "Generator"
-	label.position = Vector2(0, height + 2)
+	label.position = Vector2(0, visual_height + building_height + 2)
 	building.add_child(label)
 
-	# Make clickable
+	# Make clickable (click area covers the whole building including height)
 	var input_area = Area2D.new()
-	input_area.input_pickable = true  # Required for input_event to work!
+	input_area.input_pickable = true
 	var collision = CollisionShape2D.new()
 	var shape = RectangleShape2D.new()
-	shape.size = Vector2(width, height)
+	shape.size = Vector2(visual_width, visual_height + building_height)
 	collision.shape = shape
-	collision.position = Vector2(width / 2, height / 2)
+	collision.position = Vector2(visual_width / 2, (visual_height + building_height) / 2)
 	input_area.add_child(collision)
 	building.add_child(input_area)
 	input_area.input_event.connect(_on_building_clicked.bind(entity_id))
 
-	# Selection highlight (hidden by default)
-	var highlight = ColorRect.new()
-	highlight.size = Vector2(width + 4, height + 4)
-	highlight.position = Vector2(-2, -2)
-	highlight.color = Color(1, 1, 0, 0.5)  # Yellow highlight
+	# Selection highlight (outline around base)
+	var highlight = Polygon2D.new()
+	var highlight_points = PackedVector2Array([
+		Vector2(visual_width / 2 - 2, -2),
+		Vector2(visual_width + 2, visual_height / 2 - 2),
+		Vector2(visual_width / 2 + 2, visual_height + 2),
+		Vector2(-2, visual_height / 2 + 2)
+	])
+	highlight.polygon = highlight_points
+	highlight.color = Color(1, 1, 0, 0.5)
 	highlight.visible = false
 	highlight.z_index = -1
-	highlight.mouse_filter = Control.MOUSE_FILTER_IGNORE  # Don't block clicks
 	building.add_child(highlight)
 	building.set_meta("highlight", highlight)
 
@@ -290,14 +387,18 @@ func log_event(message: String):
 	event_log.text = log_text
 
 func _on_build_button_pressed():
-	if not network_manager.is_connected or local_player == null:
+	if not network_manager.is_connected or local_player == null or tile_size == 0:
 		return
 
-	# Build near the player
-	var build_pos = local_player.position + Vector2(60, 0)
+	# Build near the player - convert player isometric position to tiles
+	var player_tile = iso_to_tile(local_player.position)
 
-	# Client-side validation (matches server logic)
-	if not can_build_at(build_pos):
+	# Build 3 tiles to the right
+	var build_tile_x = player_tile.x + 3
+	var build_tile_y = player_tile.y
+
+	# Client-side validation
+	if not can_build_at_tile(build_tile_x, build_tile_y):
 		return
 
 	# Send build command
@@ -305,17 +406,18 @@ func _on_build_button_pressed():
 		"type": "build",
 		"data": {
 			"buildingType": "generator",
-			"x": build_pos.x,
-			"y": build_pos.y
+			"tileX": build_tile_x,
+			"tileY": build_tile_y
 		}
 	}]
 	network_manager.send_input(commands)
 
 	# Client-side prediction: assume success (will be corrected by snapshot if wrong)
-	log_event("Building generator...")
+	log_event("Building generator at tile (%d, %d)..." % [build_tile_x, build_tile_y])
 
-func can_build_at(pos: Vector2) -> bool:
-	var building_size = 40.0
+func can_build_at_tile(tile_x: int, tile_y: int) -> bool:
+	var building_footprint_w = 2  # Generators are 2x2
+	var building_footprint_h = 2
 
 	# Check money
 	if local_money < 50:
@@ -323,26 +425,13 @@ func can_build_at(pos: Vector2) -> bool:
 		return false
 
 	# Check bounds
-	if pos.x < 0 or pos.x + building_size > 800 or pos.y < 0 or pos.y + building_size > 600:
+	if tile_x < 0 or tile_x + building_footprint_w > arena_tiles_width or \
+	   tile_y < 0 or tile_y + building_footprint_h > arena_tiles_height:
 		log_event("Can't build out of bounds!")
 		return false
 
-	# Check collision with existing buildings
-	for entity_id in entities:
-		var entity = entities[entity_id]
-		if entity.has_meta("entity_id") and entity.has_meta("owner_id"):
-			# It's a building
-			var entity_pos = entity.position
-			var entity_width = 40.0  # All generators are 40x40
-			var entity_height = 40.0
-
-			# AABB collision check
-			if pos.x < entity_pos.x + entity_width and \
-			   pos.x + building_size > entity_pos.x and \
-			   pos.y < entity_pos.y + entity_height and \
-			   pos.y + building_size > entity_pos.y:
-				log_event("Can't build here - overlapping!")
-				return false
+	# TODO: Check collision with existing buildings (tile-based)
+	# For now, just allow it - server will reject if invalid
 
 	return true
 

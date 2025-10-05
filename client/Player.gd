@@ -11,16 +11,9 @@ var max_health: int = 100
 var target_position: Vector2
 var interpolation_speed: float = 10.0
 
-# For prediction (local player only)
-var predicted_position: Vector2
-var last_server_position: Vector2
-var input_buffer: Array = []
-
 func _ready():
-	if is_local_player:
-		$ColorRect.color = Color(0, 1, 0.5, 1)  # Green for local player
-		predicted_position = position
-		last_server_position = position
+	# Create isometric player visual
+	create_isometric_sprite()
 
 func setup(id: int, owner: int, pos: Vector2, is_local: bool = false):
 	entity_id = id
@@ -29,12 +22,38 @@ func setup(id: int, owner: int, pos: Vector2, is_local: bool = false):
 	target_position = pos
 	is_local_player = is_local
 
-	if is_local:
-		$ColorRect.color = Color(0, 1, 0.5, 1)  # Green
-		predicted_position = pos
-		last_server_position = pos
-	else:
-		$ColorRect.color = Color(0, 0.5, 1, 1)  # Blue
+	create_isometric_sprite()
+
+func create_isometric_sprite():
+	# Clear old visuals
+	for child in get_children():
+		if child.name == "Shadow" or child.name == "Body" or child.name == "ColorRect":
+			child.queue_free()
+
+	var base_color = Color(0, 1, 0.5, 1) if is_local_player else Color(0, 0.5, 1, 1)
+
+	# Shadow (ellipse at base)
+	var shadow = Polygon2D.new()
+	shadow.name = "Shadow"
+	var shadow_points = PackedVector2Array()
+	for i in range(16):
+		var angle = i * PI * 2 / 16
+		shadow_points.append(Vector2(cos(angle) * 12, sin(angle) * 6 + 10))
+	shadow.polygon = shadow_points
+	shadow.color = Color(0, 0, 0, 0.3)
+	shadow.z_index = -1
+	add_child(shadow)
+
+	# Body (circle with slight vertical offset for height)
+	var body = Polygon2D.new()
+	body.name = "Body"
+	var body_points = PackedVector2Array()
+	for i in range(16):
+		var angle = i * PI * 2 / 16
+		body_points.append(Vector2(cos(angle) * 10, sin(angle) * 10))
+	body.polygon = body_points
+	body.color = base_color
+	add_child(body)
 
 func update_from_snapshot(pos: Vector2, hp: int, max_hp: int):
 	health = hp
@@ -43,47 +62,12 @@ func update_from_snapshot(pos: Vector2, hp: int, max_hp: int):
 	# Update health bar
 	$HealthBar.value = (float(health) / float(max_health)) * 100.0
 
-	if is_local_player:
-		# Reconciliation for local player
-		last_server_position = pos
-		var prediction_error = pos - predicted_position
-
-		# If error is significant, correct it
-		if prediction_error.length() > 2.0:
-			predicted_position = pos
-			position = pos
-		target_position = predicted_position
-	else:
-		# Simple interpolation for other players
-		target_position = pos
-
-func apply_input(movement: Vector2, delta_time: float):
-	if not is_local_player:
-		return
-
-	# Apply predicted movement
-	var speed = 200.0  # Units per second (match server)
-	predicted_position += movement * speed * delta_time
-
-	# Clamp to arena bounds (match server)
-	predicted_position.x = clamp(predicted_position.x, 0, 800)
-	predicted_position.y = clamp(predicted_position.y, 0, 600)
-
-	target_position = predicted_position
-
-	# Store input for potential reconciliation
-	input_buffer.append({
-		"movement": movement,
-		"position": predicted_position
-	})
-
-	# Keep only recent inputs
-	if input_buffer.size() > 60:  # About 3 seconds at 20Hz
-		input_buffer.pop_front()
+	# Smooth interpolation to new position (server-authoritative)
+	target_position = pos
 
 func _physics_process(delta):
-	# Smooth interpolation to target position
-	if not is_local_player or position.distance_to(target_position) > 1.0:
+	# Smooth interpolation to target position (from server snapshots)
+	if position.distance_to(target_position) > 1.0:
 		position = position.lerp(target_position, interpolation_speed * delta)
 
 func set_player_name(name: String):

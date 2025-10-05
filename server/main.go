@@ -14,16 +14,18 @@ const (
 	ServerPort        = ":8080"
 	TickRate          = 20    // 20 Hz
 	MaxClients        = 6
-	ArenaWidth        = 800
-	ArenaHeight       = 600
-	PlayerSpeed       = 200.0 // units per second
+	TileSize          = 32    // World units per tile
+	ArenaTilesWidth   = 25    // 800 / 32
+	ArenaTilesHeight  = 18    // 576 / 32 (adjusted for clean division)
+	ArenaWidth        = ArenaTilesWidth * TileSize  // 800
+	ArenaHeight       = ArenaTilesHeight * TileSize // 576
+	MovementSpeed     = 4.0   // tiles per second
 	ClientTimeout     = 10 * time.Second // Timeout if no ping/input
 	HeartbeatInterval = 2 * time.Second  // How often clients should ping
 
 	// Game economy
 	StartingMoney     = 100
 	BuildingCost      = 50
-	BuildingSize      = 40.0  // Width/height of buildings
 
 	// Resource generation (money per second per building)
 	GeneratorIncome   = 10.0
@@ -55,6 +57,9 @@ type WelcomeMessage struct {
 	TickRate          int    `json:"tickRate"`
 	HeartbeatInterval int    `json:"heartbeatInterval"` // milliseconds
 	InputRedundancy   int    `json:"inputRedundancy"`   // How many commands to send per input
+	TileSize          int    `json:"tileSize"`          // World units per tile
+	ArenaTilesWidth   int    `json:"arenaTilesWidth"`
+	ArenaTilesHeight  int    `json:"arenaTilesHeight"`
 }
 
 type InputMessage struct {
@@ -74,14 +79,14 @@ type Command struct {
 }
 
 type MoveCommand struct {
-	DeltaX float32 `json:"deltaX"`
-	DeltaY float32 `json:"deltaY"`
+	TargetTileX int `json:"targetTileX"`
+	TargetTileY int `json:"targetTileY"`
 }
 
 type BuildCommand struct {
-	BuildingType string  `json:"buildingType"`
-	X            float32 `json:"x"`
-	Y            float32 `json:"y"`
+	BuildingType string `json:"buildingType"`
+	TileX        int    `json:"tileX"`
+	TileY        int    `json:"tileY"`
 }
 
 type AttackCommand struct {
@@ -102,15 +107,18 @@ type Player struct {
 }
 
 type Entity struct {
-	Id        uint32  `json:"id"`
-	OwnerId   uint32  `json:"ownerId"`
-	Type      string  `json:"type"`
-	X         float32 `json:"x"`
-	Y         float32 `json:"y"`
-	Health    int32   `json:"health"`
-	MaxHealth int32   `json:"maxHealth"`
-	Width     float32 `json:"width,omitempty"`
-	Height    float32 `json:"height,omitempty"`
+	Id              uint32  `json:"id"`
+	OwnerId         uint32  `json:"ownerId"`
+	Type            string  `json:"type"`
+	TileX           int     `json:"tileX"`
+	TileY           int     `json:"tileY"`
+	TargetTileX     int     `json:"targetTileX"`
+	TargetTileY     int     `json:"targetTileY"`
+	MoveProgress    float32 `json:"moveProgress"` // 0.0 to 1.0
+	Health          int32   `json:"health"`
+	MaxHealth       int32   `json:"maxHealth"`
+	FootprintWidth  int     `json:"footprintWidth,omitempty"`  // In tiles (0 for units)
+	FootprintHeight int     `json:"footprintHeight,omitempty"` // In tiles (0 for units)
 }
 
 type Client struct {
@@ -230,8 +238,15 @@ func (s *GameServer) gameTick() {
 		}
 	}
 
-	// Generate resources from buildings
+	// Update entity movement
 	deltaTime := 1.0 / float32(TickRate)
+	for _, entity := range s.entities {
+		if entity.Type == "player" {
+			s.updateEntityMovement(entity, deltaTime)
+		}
+	}
+
+	// Generate resources from buildings
 	for _, entity := range s.entities {
 		if entity.Type == "generator" {
 			if client, ok := s.clients[entity.OwnerId]; ok {
@@ -329,15 +344,22 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 	// Create player entity
 	entityId := s.nextId
 	s.nextId++
-	
+
+	// Spawn at different positions based on number of existing clients
+	spawnTileX := 3 + len(s.clients)*5
+	spawnTileY := ArenaTilesHeight / 2
+
 	entity := &Entity{
-		Id:        entityId,
-		OwnerId:   clientId,
-		Type:      "player",
-		X:         float32(100 + len(s.clients) * 150), // Simple spawn positioning
-		Y:         float32(ArenaHeight / 2),
-		Health:    100,
-		MaxHealth: 100,
+		Id:           entityId,
+		OwnerId:      clientId,
+		Type:         "player",
+		TileX:        spawnTileX,
+		TileY:        spawnTileY,
+		TargetTileX:  spawnTileX,
+		TargetTileY:  spawnTileY,
+		MoveProgress: 0.0,
+		Health:       100,
+		MaxHealth:    100,
 	}
 
 	client := &Client{
@@ -360,6 +382,9 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 		TickRate:          TickRate,
 		HeartbeatInterval: int(HeartbeatInterval.Milliseconds()),
 		InputRedundancy:   3, // Client should send last 3 commands
+		TileSize:          TileSize,
+		ArenaTilesWidth:   ArenaTilesWidth,
+		ArenaTilesHeight:  ArenaTilesHeight,
 	}
 
 	s.sendMessage(Message{
@@ -440,45 +465,73 @@ func (s *GameServer) processCommand(cmd Command, client *Client) {
 	}
 }
 
+func (s *GameServer) updateEntityMovement(entity *Entity, deltaTime float32) {
+	// Check if entity is moving
+	if entity.TileX == entity.TargetTileX && entity.TileY == entity.TargetTileY {
+		entity.MoveProgress = 0.0
+		return
+	}
+
+	// Calculate movement progress increment
+	// MovementSpeed is tiles/second, so progress per tick = (tiles/sec) * deltaTime / 1 tile
+	progressIncrement := MovementSpeed * deltaTime
+
+	entity.MoveProgress += progressIncrement
+
+	// Check if reached target
+	if entity.MoveProgress >= 1.0 {
+		entity.TileX = entity.TargetTileX
+		entity.TileY = entity.TargetTileY
+		entity.MoveProgress = 0.0
+	}
+}
+
 func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
-	if moveData, ok := cmd.Data.(map[string]interface{}); ok {
-		if client.Entity != nil {
-			// Apply delta movement with speed limit
-			deltaTime := 1.0 / float32(TickRate)
-			maxDelta := PlayerSpeed * deltaTime
+	moveData, ok := cmd.Data.(map[string]interface{})
+	if !ok || client.Entity == nil {
+		return
+	}
 
-			if dx, ok := moveData["deltaX"].(float64); ok {
-				deltaX := float32(dx)
-				if deltaX > maxDelta {
-					deltaX = maxDelta
-				} else if deltaX < -maxDelta {
-					deltaX = -maxDelta
-				}
-				client.Entity.X += deltaX
-			}
-			if dy, ok := moveData["deltaY"].(float64); ok {
-				deltaY := float32(dy)
-				if deltaY > maxDelta {
-					deltaY = maxDelta
-				} else if deltaY < -maxDelta {
-					deltaY = -maxDelta
-				}
-				client.Entity.Y += deltaY
-			}
+	targetTileX, okX := moveData["targetTileX"].(float64) // JSON numbers are float64
+	targetTileY, okY := moveData["targetTileY"].(float64)
+	if !okX || !okY {
+		return
+	}
 
-			// Apply arena bounds
-			if client.Entity.X < 0 {
-				client.Entity.X = 0
-			} else if client.Entity.X > ArenaWidth {
-				client.Entity.X = ArenaWidth
-			}
-			if client.Entity.Y < 0 {
-				client.Entity.Y = 0
-			} else if client.Entity.Y > ArenaHeight {
-				client.Entity.Y = ArenaHeight
+	tileX := int(targetTileX)
+	tileY := int(targetTileY)
+
+	// Validate bounds
+	if tileX < 0 || tileX >= ArenaTilesWidth || tileY < 0 || tileY >= ArenaTilesHeight {
+		return
+	}
+
+	// Check if target tile has a building (can't move into buildings)
+	if s.isTileOccupiedByBuilding(tileX, tileY) {
+		return
+	}
+
+	// Set target (allow stacking of units)
+	client.Entity.TargetTileX = tileX
+	client.Entity.TargetTileY = tileY
+
+	// If we're setting a new target while already moving, reset progress
+	if client.Entity.TileX != tileX || client.Entity.TileY != tileY {
+		client.Entity.MoveProgress = 0.0
+	}
+}
+
+func (s *GameServer) isTileOccupiedByBuilding(tileX, tileY int) bool {
+	for _, entity := range s.entities {
+		if entity.Type == "generator" {
+			// Check if (tileX, tileY) is within building's footprint
+			if tileX >= entity.TileX && tileX < entity.TileX+entity.FootprintWidth &&
+				tileY >= entity.TileY && tileY < entity.TileY+entity.FootprintHeight {
+				return true
 			}
 		}
 	}
+	return false
 }
 
 func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
@@ -488,33 +541,37 @@ func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 	}
 
 	buildingType, _ := buildData["buildingType"].(string)
-	x, _ := buildData["x"].(float64)
-	y, _ := buildData["y"].(float64)
+	tileXFloat, _ := buildData["tileX"].(float64)
+	tileYFloat, _ := buildData["tileY"].(float64)
+	tileX := int(tileXFloat)
+	tileY := int(tileYFloat)
 
-	// Validate building type
-	if buildingType != "generator" {
-		return // Client will detect failure via snapshot (no new building, money unchanged)
+	// Validate building type and get footprint
+	var footprintWidth, footprintHeight int
+	switch buildingType {
+	case "generator":
+		footprintWidth = 2
+		footprintHeight = 2
+	default:
+		return // Unknown building type
 	}
 
 	// Check if player has enough money
 	if client.Money < BuildingCost {
-		return // Client will detect via snapshot
+		return
 	}
 
 	// Check bounds
-	if x < 0 || x+BuildingSize > ArenaWidth || y < 0 || y+BuildingSize > ArenaHeight {
-		return // Client will detect via snapshot
+	if tileX < 0 || tileX+footprintWidth > ArenaTilesWidth ||
+		tileY < 0 || tileY+footprintHeight > ArenaTilesHeight {
+		return
 	}
 
-	// Check for collisions with existing buildings
-	for _, entity := range s.entities {
-		if entity.Type == "generator" {
-			// Simple AABB collision
-			if x < float64(entity.X+entity.Width) &&
-				x+float64(BuildingSize) > float64(entity.X) &&
-				y < float64(entity.Y+entity.Height) &&
-				y+float64(BuildingSize) > float64(entity.Y) {
-				return // Client will detect via snapshot
+	// Check for collisions with existing buildings (all tiles in footprint must be free)
+	for dx := 0; dx < footprintWidth; dx++ {
+		for dy := 0; dy < footprintHeight; dy++ {
+			if s.isTileOccupiedByBuilding(tileX+dx, tileY+dy) {
+				return
 			}
 		}
 	}
@@ -526,21 +583,23 @@ func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 	s.nextId++
 
 	building := &Entity{
-		Id:        entityId,
-		OwnerId:   client.Id,
-		Type:      buildingType,
-		X:         float32(x),
-		Y:         float32(y),
-		Health:    100,
-		MaxHealth: 100,
-		Width:     BuildingSize,
-		Height:    BuildingSize,
+		Id:              entityId,
+		OwnerId:         client.Id,
+		Type:            buildingType,
+		TileX:           tileX,
+		TileY:           tileY,
+		TargetTileX:     tileX,
+		TargetTileY:     tileY,
+		MoveProgress:    0.0,
+		Health:          100,
+		MaxHealth:       100,
+		FootprintWidth:  footprintWidth,
+		FootprintHeight: footprintHeight,
 	}
 
 	s.entities[entityId] = building
 
-	log.Printf("Client %d built %s at (%.1f, %.1f)", client.Id, buildingType, x, y)
-	// No event needed - client will see new building + money change in snapshot
+	log.Printf("Client %d built %s at tile (%d, %d)", client.Id, buildingType, tileX, tileY)
 }
 
 func (s *GameServer) handleAttackCommand(cmd Command, client *Client) {
