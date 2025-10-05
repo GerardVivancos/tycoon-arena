@@ -36,3 +36,38 @@ offset_top = 70.0
 offset_right = 200.0
 offset_bottom = 200.0
 text = "Players:"
+
+[node name="MoneyLabel" type="Label" parent="UI"]
+offset_left = 10.0
+offset_top = 210.0
+offset_right = 200.0
+offset_bottom = 235.0
+text = "Money: $0"
+
+[node name="BuildButton" type="Button" parent="UI"]
+offset_left = 10.0
+offset_top = 240.0
+offset_right = 150.0
+offset_bottom = 280.0
+text = "Build Generator ($50)"
+
+[node name="AttackButton" type="Button" parent="UI"]
+offset_left = 10.0
+offset_top = 290.0
+offset_right = 150.0
+offset_bottom = 330.0
+text = "Attack Selected (Q)"
+
+[node name="SelectionLabel" type="Label" parent="UI"]
+offset_left = 10.0
+offset_top = 340.0
+offset_right = 200.0
+offset_bottom = 365.0
+text = "No target selected"
+
+[node name="EventLog" type="RichTextLabel" parent="UI"]
+offset_left = 10.0
+offset_top = 400.0
+offset_right = 300.0
+offset_bottom = 590.0
+text = "Events:"

@@ -14,6 +14,8 @@ var current_tick: int = 0
 var sequence: int = 0
 var heartbeat_interval: float = 2.0  # seconds
 var heartbeat_timer: float = 0.0
+var input_redundancy: int = 3  # Send last N commands
+var command_history: Array = []  # Store recent commands for redundancy
 
 func _ready():
 	udp_socket = PacketPeerUDP.new()
@@ -44,13 +46,27 @@ func send_input(commands: Array):
 		return
 
 	sequence += 1
+
+	# Create command frame
+	var command_frame = {
+		"sequence": sequence,
+		"tick": current_tick,
+		"commands": commands
+	}
+
+	# Add to history
+	command_history.append(command_frame)
+
+	# Keep only last N commands for redundancy
+	if command_history.size() > input_redundancy:
+		command_history.pop_front()
+
+	# Send last N command frames (redundancy for packet loss)
 	var input_msg = {
 		"type": "input",
 		"data": {
-			"tick": current_tick,
 			"clientId": client_id,
-			"sequence": sequence,
-			"commands": commands
+			"commands": command_history  # Send all recent frames
 		}
 	}
 	send_message(input_msg)
@@ -98,9 +114,11 @@ func handle_welcome(data: Dictionary):
 	tick_rate = data.get("tickRate", 20)
 	var heartbeat_ms = data.get("heartbeatInterval", 2000)
 	heartbeat_interval = heartbeat_ms / 1000.0  # Convert to seconds
+	input_redundancy = data.get("inputRedundancy", 3)  # Server can configure redundancy
 	is_connected = true
 	heartbeat_timer = 0.0  # Reset timer
-	print("Connected! Client ID: %d, Tick Rate: %d, Heartbeat: %.1fs" % [client_id, tick_rate, heartbeat_interval])
+	command_history.clear()  # Clear history on new connection
+	print("Connected! Client ID: %d, Tick Rate: %d, Heartbeat: %.1fs, Redundancy: %d" % [client_id, tick_rate, heartbeat_interval, input_redundancy])
 	connected_to_server.emit(client_id, tick_rate)
 
 func handle_snapshot(data: Dictionary):
