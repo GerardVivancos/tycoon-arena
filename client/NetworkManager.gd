@@ -110,11 +110,11 @@ func handle_message(message: Dictionary):
 			pass  # Handle ping/pong if needed
 
 func handle_welcome(data: Dictionary):
-	client_id = data.get("clientId", -1)
-	tick_rate = data.get("tickRate", 20)
-	var heartbeat_ms = data.get("heartbeatInterval", 2000)
+	client_id = int(data.get("clientId", -1))  # JSON→int conversion
+	tick_rate = int(data.get("tickRate", 20))
+	var heartbeat_ms = int(data.get("heartbeatInterval", 2000))
 	heartbeat_interval = heartbeat_ms / 1000.0  # Convert to seconds
-	input_redundancy = data.get("inputRedundancy", 3)  # Server can configure redundancy
+	input_redundancy = int(data.get("inputRedundancy", 3))  # Server can configure redundancy
 	is_connected = true
 	heartbeat_timer = 0.0  # Reset timer
 	command_history.clear()  # Clear history on new connection

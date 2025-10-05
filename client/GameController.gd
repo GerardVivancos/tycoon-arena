@@ -55,8 +55,10 @@ func _on_snapshot_received(snapshot: Dictionary):
 	var current_entity_ids = {}
 
 	for entity_data in entities_data:
-		var entity_id = entity_data.get("id", -1)
-		var owner_id = entity_data.get("ownerId", -1)
+		# JSON has no integer type - all numbers are floats
+		# Convert to int for type-safe dictionary keys and comparisons
+		var entity_id = int(entity_data.get("id", -1))
+		var owner_id = int(entity_data.get("ownerId", -1))
 		var entity_type = entity_data.get("type", "")
 		var x = entity_data.get("x", 0.0)
 		var y = entity_data.get("y", 0.0)
@@ -179,7 +181,7 @@ func update_player_list():
 	var text = "Players:\n"
 	for player_id_str in players_data:
 		var player_data = players_data[player_id_str]
-		var player_id = player_data.get("id", -1)
+		var player_id = int(player_data.get("id", -1))  # JSON→int conversion
 		var player_name = player_data.get("name", "Unknown")
 		var money = player_data.get("money", 0.0)
 
@@ -208,6 +210,7 @@ func create_building(entity_id: int, owner_id: int, pos: Vector2, width: float, 
 	var rect = ColorRect.new()
 	rect.size = Vector2(width, height)
 	rect.color = Color(1, 0.8, 0, 1) if owner_id == local_client_id else Color(0.8, 0.4, 0, 1)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE  # Let clicks pass through to Area2D!
 	building.add_child(rect)
 
 	# Health bar
@@ -245,6 +248,7 @@ func create_building(entity_id: int, owner_id: int, pos: Vector2, width: float, 
 	highlight.color = Color(1, 1, 0, 0.5)  # Yellow highlight
 	highlight.visible = false
 	highlight.z_index = -1
+	highlight.mouse_filter = Control.MOUSE_FILTER_IGNORE  # Don't block clicks
 	building.add_child(highlight)
 	building.set_meta("highlight", highlight)
 

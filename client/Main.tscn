@@ -1,7 +1,7 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=3 format=3 uid="uid://cb3fhev6t1717"]
 
-[ext_resource type="Script" path="res://GameController.gd" id="1"]
-[ext_resource type="Script" path="res://NetworkManager.gd" id="2"]
+[ext_resource type="Script" uid="uid://buh5ymhs1v0xu" path="res://GameController.gd" id="1"]
+[ext_resource type="Script" uid="uid://cy6xcdjrnikai" path="res://NetworkManager.gd" id="2"]
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1")
