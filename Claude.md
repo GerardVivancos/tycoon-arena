@@ -147,14 +147,23 @@ Why this combination:
    - Multi-client support tested and working
    - See `.claude/docs/sprints/SPRINT_1_COMPLETE.md` for details
 
-   **Sprint 2 - Game Rules & Mechanics (NEXT)**
-   - Building placement system
-   - Resource generation
-   - Interference actions
+   **Sprint 2 - Game Rules & Mechanics (✅ COMPLETE)**
+   - Building placement system with collision detection
+   - Resource generation ($10/sec per generator)
+   - Attack/sabotage mechanics (25 damage per hit)
+   - Client-side prediction and validation
+   - Network architecture refactored to Quake 3 model
+   - See `.claude/docs/sprints/SPRINT_2_COMPLETE.md` for details
+
+   **Sprint 3 - Playtesting & Iteration (NEXT)**
+   - Tune tick rates, latencies, and gameplay
+   - Add minimal server logging and metrics
+   - Start thinking about theme and art
 
    **Documentation**
    - All sprint and planning documentation is in `.claude/docs/`
    - See `.claude/docs/README.md` for full index
+   - Network protocol: `.claude/docs/NETWORK_PROTOCOL.md`
 
    ## Notes on language choice — short guidance
 
@@ -166,7 +175,7 @@ Why this combination:
 
    - Host server on Linux: both Rust and Go are great; Dockerize for portability.
    - Client platforms: Godot exports to Windows/macOS/iOS. Bevy/Unity are alternatives depending on language preference.
-   - Protocol: Protobuf for structure and versioning; custom compact binary acceptable for first prototype.
+   - Protocol: JSON (current) for rapid prototyping and debugging; binary protocol (Protobuf/MessagePack) can be added later for optimization.
 
    ---
 
