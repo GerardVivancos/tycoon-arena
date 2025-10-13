@@ -185,3 +185,4 @@ Why this combination:
 
    Tell me which follow-up you want and I will implement it next.
 - ./launch-all.sh can be used to start the server and some clients
+- don't start the server and client, just make sure it builds and I will do the testing unless I tell you otherwise

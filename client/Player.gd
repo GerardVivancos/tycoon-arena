@@ -12,15 +12,21 @@ var is_selected: bool = false
 var target_position: Vector2
 var interpolation_speed: float = 10.0
 
+# Selection ring references
+var selection_ring: Polygon2D = null
+var outer_selection_ring: Polygon2D = null
+
 func _ready():
 	# Create isometric player visual
 	create_isometric_sprite()
 
 func set_selected(selected: bool):
 	is_selected = selected
-	# Update selection visual
-	if has_node("SelectionRing"):
-		$SelectionRing.visible = selected
+	# Update selection visual using direct references
+	if selection_ring:
+		selection_ring.visible = selected
+	if outer_selection_ring:
+		outer_selection_ring.visible = selected
 
 func setup(id: int, owner: int, pos: Vector2, is_local: bool = false):
 	entity_id = id
@@ -38,22 +44,35 @@ func setup(id: int, owner: int, pos: Vector2, is_local: bool = false):
 func create_isometric_sprite():
 	# Clear old visuals
 	for child in get_children():
-		if child.name in ["Shadow", "Body", "ColorRect", "SelectionRing"]:
+		if child.name in ["Shadow", "Body", "ColorRect", "SelectionRing", "OuterSelectionRing"]:
 			child.queue_free()
 
 	var base_color = Color(0, 1, 0.5, 1) if is_local_player else Color(0, 0.5, 1, 1)
 
-	# Selection ring (hidden by default)
-	var selection_ring = Polygon2D.new()
+	# Selection ring - outer dark ring for contrast (hidden by default)
+	outer_selection_ring = Polygon2D.new()
+	outer_selection_ring.name = "OuterSelectionRing"
+	var outer_points = PackedVector2Array()
+	for i in range(20):
+		var angle = i * PI * 2 / 20
+		outer_points.append(Vector2(cos(angle) * 20, sin(angle) * 10 + 10))
+	outer_selection_ring.polygon = outer_points
+	outer_selection_ring.color = Color(0, 0, 0, 0.8)  # Dark outline
+	outer_selection_ring.visible = is_selected
+	outer_selection_ring.z_index = 0
+	add_child(outer_selection_ring)
+
+	# Selection ring - bright yellow inner ring (hidden by default)
+	selection_ring = Polygon2D.new()
 	selection_ring.name = "SelectionRing"
 	var ring_points = PackedVector2Array()
 	for i in range(20):
 		var angle = i * PI * 2 / 20
-		ring_points.append(Vector2(cos(angle) * 14, sin(angle) * 7 + 10))
+		ring_points.append(Vector2(cos(angle) * 18, sin(angle) * 9 + 10))
 	selection_ring.polygon = ring_points
-	selection_ring.color = Color(1, 1, 0, 0.6)  # Yellow
+	selection_ring.color = Color(1, 1, 0, 1.0)  # Bright yellow, fully opaque
 	selection_ring.visible = is_selected
-	selection_ring.z_index = -2
+	selection_ring.z_index = 1
 	add_child(selection_ring)
 
 	# Shadow (ellipse at base)

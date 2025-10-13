@@ -65,9 +65,37 @@ offset_right = 200.0
 offset_bottom = 365.0
 text = "No target selected"
 
-[node name="EventLog" type="RichTextLabel" parent="UI"]
+[node name="FormationLabel" type="Label" parent="UI"]
+offset_left = 10.0
+offset_top = 370.0
+offset_right = 200.0
+offset_bottom = 395.0
+text = "Formation: Box"
+
+[node name="BoxFormationButton" type="Button" parent="UI"]
 offset_left = 10.0
 offset_top = 400.0
+offset_right = 90.0
+offset_bottom = 435.0
+text = "Box (1)"
+
+[node name="LineFormationButton" type="Button" parent="UI"]
+offset_left = 100.0
+offset_top = 400.0
+offset_right = 180.0
+offset_bottom = 435.0
+text = "Line (2)"
+
+[node name="SpreadFormationButton" type="Button" parent="UI"]
+offset_left = 190.0
+offset_top = 400.0
+offset_right = 280.0
+offset_bottom = 435.0
+text = "Spread (3)"
+
+[node name="EventLog" type="RichTextLabel" parent="UI"]
+offset_left = 10.0
+offset_top = 445.0
 offset_right = 300.0
 offset_bottom = 590.0
 text = "Events:"

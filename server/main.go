@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"sort"
 	"sync"
@@ -82,6 +83,7 @@ type MoveCommand struct {
 	UnitIds     []uint32 `json:"unitIds"` // Which units to move
 	TargetTileX int      `json:"targetTileX"`
 	TargetTileY int      `json:"targetTileY"`
+	Formation   string   `json:"formation"` // Formation type: "box", "line", "staggered", "spread"
 }
 
 type BuildCommand struct {
@@ -244,7 +246,7 @@ func (s *GameServer) gameTick() {
 	deltaTime := 1.0 / float32(TickRate)
 	for _, entity := range s.entities {
 		// Update movement for all unit types
-		if entity.Type == "worker" || entity.Type == "player" {
+		if entity.Type == "worker" {
 			s.updateEntityMovement(entity, deltaTime)
 		}
 	}
@@ -344,12 +346,12 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 	clientId := s.nextId
 	s.nextId++
 
-	// Spawn starting units for this player (3 workers)
+	// Spawn starting units for this player (5 workers)
 	spawnBaseTileX := 3 + len(s.clients)*5
 	spawnBaseTileY := ArenaTilesHeight / 2
 
-	ownedUnits := make([]uint32, 0, 3)
-	for i := 0; i < 3; i++ {
+	ownedUnits := make([]uint32, 0, 5)
+	for i := 0; i < 5; i++ {
 		entityId := s.nextId
 		s.nextId++
 
@@ -493,6 +495,135 @@ func (s *GameServer) updateEntityMovement(entity *Entity, deltaTime float32) {
 	}
 }
 
+type TilePosition struct {
+	X, Y int
+}
+
+// calculateFormation returns tile positions for units in the specified formation
+func (s *GameServer) calculateFormation(formation string, centerX, centerY, numUnits int) []TilePosition {
+	switch formation {
+	case "box":
+		return s.calculateBoxFormation(centerX, centerY, numUnits)
+	case "line":
+		return s.calculateLineFormation(centerX, centerY, numUnits)
+	case "spread":
+		return s.calculateSpiralFormation(centerX, centerY, numUnits)
+	default:
+		// Default to box formation
+		return s.calculateBoxFormation(centerX, centerY, numUnits)
+	}
+}
+
+// calculateBoxFormation creates a grid pattern (√n × √n arrangement)
+func (s *GameServer) calculateBoxFormation(centerX, centerY, numUnits int) []TilePosition {
+	positions := make([]TilePosition, 0, numUnits)
+
+	// Calculate grid dimensions (roughly square)
+	gridSize := int(math.Ceil(math.Sqrt(float64(numUnits))))
+
+	// Center the grid around the target point
+	startX := centerX - gridSize/2
+	startY := centerY - gridSize/2
+
+	for i := 0; i < numUnits; i++ {
+		row := i / gridSize
+		col := i % gridSize
+
+		tileX := startX + col
+		tileY := startY + row
+
+		// Validate bounds
+		if tileX < 0 || tileX >= ArenaTilesWidth || tileY < 0 || tileY >= ArenaTilesHeight {
+			continue
+		}
+
+		// Skip if occupied by building
+		if s.isTileOccupiedByBuilding(tileX, tileY) {
+			continue
+		}
+
+		positions = append(positions, TilePosition{X: tileX, Y: tileY})
+	}
+
+	// If we couldn't find enough positions, fill remaining with center tile
+	for len(positions) < numUnits {
+		positions = append(positions, TilePosition{X: centerX, Y: centerY})
+	}
+
+	return positions
+}
+
+// calculateLineFormation creates a horizontal line
+func (s *GameServer) calculateLineFormation(centerX, centerY, numUnits int) []TilePosition {
+	positions := make([]TilePosition, 0, numUnits)
+
+	// Center the line around the target point
+	startX := centerX - numUnits/2
+
+	for i := 0; i < numUnits; i++ {
+		tileX := startX + i
+		tileY := centerY
+
+		// Validate bounds
+		if tileX < 0 || tileX >= ArenaTilesWidth || tileY < 0 || tileY >= ArenaTilesHeight {
+			continue
+		}
+
+		// Skip if occupied by building
+		if s.isTileOccupiedByBuilding(tileX, tileY) {
+			continue
+		}
+
+		positions = append(positions, TilePosition{X: tileX, Y: tileY})
+	}
+
+	// Fill remaining with center tile
+	for len(positions) < numUnits {
+		positions = append(positions, TilePosition{X: centerX, Y: centerY})
+	}
+
+	return positions
+}
+
+// calculateSpiralFormation creates a spiral pattern from center
+func (s *GameServer) calculateSpiralFormation(centerX, centerY, numUnits int) []TilePosition {
+	positions := make([]TilePosition, 0, numUnits)
+
+	// Start with center
+	if !s.isTileOccupiedByBuilding(centerX, centerY) {
+		positions = append(positions, TilePosition{X: centerX, Y: centerY})
+	}
+
+	// Spiral outward
+	directions := []TilePosition{{1, 0}, {0, 1}, {-1, 0}, {0, -1}} // Right, Down, Left, Up
+	x, y := centerX, centerY
+	steps := 1
+
+	for len(positions) < numUnits {
+		for _, dir := range directions {
+			for step := 0; step < steps && len(positions) < numUnits; step++ {
+				x += dir.X
+				y += dir.Y
+
+				// Validate bounds
+				if x >= 0 && x < ArenaTilesWidth && y >= 0 && y < ArenaTilesHeight {
+					// Skip if occupied by building
+					if !s.isTileOccupiedByBuilding(x, y) {
+						positions = append(positions, TilePosition{X: x, Y: y})
+					}
+				}
+			}
+
+			// Increase steps after every 2 directions (right+down, left+up)
+			if dir.X == 0 {
+				steps++
+			}
+		}
+	}
+
+	return positions
+}
+
 func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 	moveData, ok := cmd.Data.(map[string]interface{})
 	if !ok {
@@ -519,12 +650,14 @@ func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 		return
 	}
 
-	// Check if target tile has a building (can't move into buildings)
-	if s.isTileOccupiedByBuilding(tileX, tileY) {
-		return
+	// Get formation type (default to "box")
+	formation, _ := moveData["formation"].(string)
+	if formation == "" {
+		formation = "box"
 	}
 
-	// Move each selected unit
+	// Collect valid unit IDs that belong to this player
+	validUnitIds := make([]uint32, 0, len(unitIdsInterface))
 	for _, unitIdInterface := range unitIdsInterface {
 		unitIdFloat, ok := unitIdInterface.(float64)
 		if !ok {
@@ -539,16 +672,43 @@ func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 		}
 
 		// Only move units, not buildings
-		if entity.Type != "worker" && entity.Type != "player" {
-			continue
+		if entity.Type == "worker" {
+			validUnitIds = append(validUnitIds, unitId)
+		}
+	}
+
+	if len(validUnitIds) == 0 {
+		return
+	}
+
+	// Sort unit IDs for determinism
+	sort.Slice(validUnitIds, func(i, j int) bool {
+		return validUnitIds[i] < validUnitIds[j]
+	})
+
+	// Calculate formation positions
+	formationPositions := s.calculateFormation(formation, tileX, tileY, len(validUnitIds))
+
+	// Assign each unit to its formation position
+	for i, unitId := range validUnitIds {
+		entity := s.entities[unitId]
+
+		var targetX, targetY int
+		if i < len(formationPositions) {
+			targetX = formationPositions[i].X
+			targetY = formationPositions[i].Y
+		} else {
+			// Fallback to center if not enough formation positions
+			targetX = tileX
+			targetY = tileY
 		}
 
-		// Set target (allow stacking of units)
-		entity.TargetTileX = tileX
-		entity.TargetTileY = tileY
+		// Set target
+		entity.TargetTileX = targetX
+		entity.TargetTileY = targetY
 
 		// If we're setting a new target while already moving, reset progress
-		if entity.TileX != tileX || entity.TileY != tileY {
+		if entity.TileX != targetX || entity.TileY != targetY {
 			entity.MoveProgress = 0.0
 		}
 	}

@@ -9,6 +9,10 @@ extends Node2D
 @onready var build_button = $UI/BuildButton
 @onready var attack_button = $UI/AttackButton
 @onready var selection_label = $UI/SelectionLabel
+@onready var formation_label = $UI/FormationLabel
+@onready var box_formation_button = $UI/BoxFormationButton
+@onready var line_formation_button = $UI/LineFormationButton
+@onready var spread_formation_button = $UI/SpreadFormationButton
 @onready var event_log = $UI/EventLog
 
 # Tile system (from server via handshake)
@@ -33,6 +37,15 @@ var selected_target_id: int = -1  # Target for attacks (buildings)
 var selected_building: Node2D = null
 var event_messages: Array = []
 
+# Drag selection
+var is_dragging: bool = false
+var drag_start_pos: Vector2 = Vector2.ZERO
+var drag_current_pos: Vector2 = Vector2.ZERO
+const DRAG_THRESHOLD: float = 5.0  # Minimum pixels to count as drag vs click
+
+# Formation system
+var current_formation: String = "box"  # Options: "box", "line", "spread"
+
 func _ready():
 	# Connect network signals
 	network_manager.connected_to_server.connect(_on_connected_to_server)
@@ -42,6 +55,14 @@ func _ready():
 	# Connect UI signals
 	build_button.pressed.connect(_on_build_button_pressed)
 	attack_button.pressed.connect(_on_attack_button_pressed)
+	box_formation_button.pressed.connect(func(): set_formation("box"))
+	line_formation_button.pressed.connect(func(): set_formation("line"))
+	spread_formation_button.pressed.connect(func(): set_formation("spread"))
+
+	# Initialize formation display (box is default)
+	box_formation_button.text = "► Box (1)"
+	line_formation_button.text = "Line (2)"
+	spread_formation_button.text = "Spread (3)"
 
 	# Auto-connect on start
 	network_manager.connect_to_server("Player" + str(randi() % 1000))
@@ -189,6 +210,16 @@ func _input(event):
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_Q:
 		_on_attack_button_pressed()
 
+	# Handle formation hotkeys
+	if event is InputEventKey and event.pressed and not event.echo:
+		match event.keycode:
+			KEY_1:
+				set_formation("box")
+			KEY_2:
+				set_formation("line")
+			KEY_3:
+				set_formation("spread")
+
 func _draw():
 	if tile_size == 0:
 		return
@@ -211,30 +242,73 @@ func _draw():
 	# Draw origin marker at tile (0,0) center
 	draw_circle(tile_to_iso(0, 0), 5.0, Color(1, 0, 0, 1.0))
 
+	# Draw selection box while dragging
+	if is_dragging:
+		var rect = make_rect(drag_start_pos, drag_current_pos)
+		# Draw semi-transparent fill
+		draw_rect(rect, Color(0, 1, 0, 0.2))
+		# Draw outline
+		draw_rect(rect, Color(0, 1, 0, 0.8), false, 2.0)
+
 func _unhandled_input(event):
 	if not network_manager.is_connected or tile_size == 0:
 		return
 
-	# Left click to select unit
+	# Left mouse button pressed - start drag
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		var click_pos = get_local_mouse_position()
-		print("Left click at: ", click_pos)
-		var clicked_entity_id = get_entity_at_position(click_pos)
-		print("Clicked entity ID: ", clicked_entity_id)
+		is_dragging = true
+		drag_start_pos = get_local_mouse_position()
+		drag_current_pos = drag_start_pos
 
-		if clicked_entity_id != -1:
-			var entity = entities.get(clicked_entity_id)
-			var entity_owner = entity.get_meta("owner_id", -1) if entity else -1
-			print("Entity owner: ", entity_owner, " local_client_id: ", local_client_id)
-			if entity and entity.has_method("get_meta") and entity_owner == local_client_id:
-				# This is our unit - select it
-				selected_units.clear()
-				selected_units.append(clicked_entity_id)
-				update_selection_visual()
-				log_event("Selected unit %d" % clicked_entity_id)
-				print("Selected unit: ", clicked_entity_id)
+	# Mouse motion - update drag
+	elif event is InputEventMouseMotion and is_dragging:
+		drag_current_pos = get_local_mouse_position()
+		queue_redraw()  # Redraw to show selection box
+
+	# Left mouse button released - finish selection
+	elif event is InputEventMouseButton and not event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		if is_dragging:
+			is_dragging = false
+			queue_redraw()  # Clear selection box
+
+			var drag_distance = drag_start_pos.distance_to(drag_current_pos)
+
+			if drag_distance < DRAG_THRESHOLD:
+				# Small drag = single click selection
+				var clicked_entity_id = get_entity_at_position(drag_start_pos)
+				print("Clicked entity ID: ", clicked_entity_id)
+
+				if clicked_entity_id != -1:
+					var entity = entities.get(clicked_entity_id)
+					var entity_owner = entity.get_meta("owner_id", -1) if entity else -1
+					print("Entity owner: ", entity_owner, " local_client_id: ", local_client_id)
+					if entity and entity.has_method("get_meta") and entity_owner == local_client_id:
+						# This is our unit - select it
+						selected_units.clear()
+						selected_units.append(clicked_entity_id)
+						update_selection_visual()
+						log_event("Selected unit %d" % clicked_entity_id)
+						print("Selected unit: ", clicked_entity_id)
+					else:
+						print("Not our unit or invalid entity")
+				else:
+					# Clicked empty space - deselect all
+					selected_units.clear()
+					update_selection_visual()
 			else:
-				print("Not our unit or invalid entity")
+				# Large drag = box selection
+				var rect = make_rect(drag_start_pos, drag_current_pos)
+				var selected_entity_ids = get_entities_in_rect(rect)
+
+				if selected_entity_ids.size() > 0:
+					selected_units = selected_entity_ids
+					update_selection_visual()
+					log_event("Selected %d units" % selected_units.size())
+					print("Box selected units: ", selected_units)
+				else:
+					# No units in box - deselect all
+					selected_units.clear()
+					update_selection_visual()
 
 	# Right click to move selected units
 	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
@@ -248,17 +322,18 @@ func _unhandled_input(event):
 
 		print("Move command: units ", selected_units, " -> tile: ", tile_coords)
 
-		# Send move command with selected unit IDs
+		# Send move command with selected unit IDs and formation
 		var commands = [{
 			"type": "move",
 			"data": {
 				"unitIds": selected_units,
 				"targetTileX": tile_coords.x,
-				"targetTileY": tile_coords.y
+				"targetTileY": tile_coords.y,
+				"formation": current_formation
 			}
 		}]
 		network_manager.send_input(commands)
-		log_event("Moving %d units to tile (%d, %d)" % [selected_units.size(), tile_coords.x, tile_coords.y])
+		log_event("Moving %d units to tile (%d, %d) in %s formation" % [selected_units.size(), tile_coords.x, tile_coords.y, current_formation])
 
 func get_entity_at_position(screen_pos: Vector2) -> int:
 	# Check all entities to see if click is within their bounds
@@ -285,6 +360,95 @@ func update_selection_visual():
 			var entity = entities[unit_id]
 			if entity and entity.has_method("set_selected"):
 				entity.set_selected(true)
+
+func set_formation(formation: String):
+	# Update formation
+	current_formation = formation
+
+	# Update UI
+	var formation_name = formation.capitalize()
+	formation_label.text = "Formation: " + formation_name
+	log_event("Formation changed to: " + formation_name)
+
+	# Update button highlighting (simple text-based)
+	box_formation_button.text = "Box (1)" if formation != "box" else "► Box (1)"
+	line_formation_button.text = "Line (2)" if formation != "line" else "► Line (2)"
+	spread_formation_button.text = "Spread (3)" if formation != "spread" else "► Spread (3)"
+
+	# If units are selected, re-form them in place if they're close together
+	if selected_units.size() > 1:
+		# Calculate center position of selected units (in tiles)
+		var center_tile_x: float = 0.0
+		var center_tile_y: float = 0.0
+		var max_distance: float = 0.0
+
+		for unit_id in selected_units:
+			if unit_id in entities:
+				var entity = entities[unit_id]
+				var screen_pos = entity.position
+				var tile_pos = iso_to_tile(screen_pos)
+				center_tile_x += tile_pos.x
+				center_tile_y += tile_pos.y
+
+		center_tile_x /= selected_units.size()
+		center_tile_y /= selected_units.size()
+
+		# Check if all units are within threshold distance (5 tiles)
+		const REFORM_THRESHOLD: float = 5.0
+		var all_close: bool = true
+		for unit_id in selected_units:
+			if unit_id in entities:
+				var entity = entities[unit_id]
+				var screen_pos = entity.position
+				var tile_pos = iso_to_tile(screen_pos)
+				var distance = Vector2(tile_pos.x - center_tile_x, tile_pos.y - center_tile_y).length()
+				if distance > REFORM_THRESHOLD:
+					all_close = false
+					break
+
+		# If all units are close, send move command to center with new formation
+		if all_close:
+			var center_tile = Vector2i(int(round(center_tile_x)), int(round(center_tile_y)))
+
+			# Validate bounds
+			if center_tile.x >= 0 and center_tile.x < arena_tiles_width and center_tile.y >= 0 and center_tile.y < arena_tiles_height:
+				var commands = [{
+					"type": "move",
+					"data": {
+						"unitIds": selected_units,
+						"targetTileX": center_tile.x,
+						"targetTileY": center_tile.y,
+						"formation": current_formation
+					}
+				}]
+				network_manager.send_input(commands)
+				log_event("Re-forming %d units in %s formation" % [selected_units.size(), formation_name])
+
+func make_rect(from: Vector2, to: Vector2) -> Rect2:
+	# Create normalized rectangle (handles dragging left/up)
+	var pos = Vector2(min(from.x, to.x), min(from.y, to.y))
+	var size = Vector2(abs(to.x - from.x), abs(to.y - from.y))
+	return Rect2(pos, size)
+
+func get_entities_in_rect(rect: Rect2) -> Array[int]:
+	# Find all owned units within the selection rectangle
+	var selected: Array[int] = []
+	for entity_id in entities:
+		var entity = entities[entity_id]
+		if entity and entity is Node2D:
+			# Check if this is our unit (not a building)
+			var entity_owner = entity.get_meta("owner_id", -1) if entity.has_method("get_meta") else -1
+			if entity_owner != local_client_id:
+				continue
+
+			# Skip buildings (only select workers/units)
+			if entity.has_meta("entity_id") and not entity.has_method("set_selected"):
+				continue
+
+			# Check if entity position is within rectangle
+			if rect.has_point(entity.position):
+				selected.append(entity_id)
+	return selected
 
 func update_player_list():
 	var text = "Players:\n"
@@ -439,6 +603,9 @@ func log_event(message: String):
 	for msg in event_messages:
 		log_text += "• " + msg + "\n"
 	event_log.text = log_text
+
+	# Auto-scroll to bottom
+	event_log.scroll_to_line(event_log.get_line_count() - 1)
 
 func _on_build_button_pressed():
 	if not network_manager.is_connected or tile_size == 0 or selected_units.is_empty():
