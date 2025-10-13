@@ -15,23 +15,23 @@ import (
 
 const (
 	ServerPort        = ":8080"
-	TickRate          = 20    // 20 Hz
+	TickRate          = 20 // 20 Hz
 	MaxClients        = 6
-	TileSize          = 32    // World units per tile
-	ArenaTilesWidth   = 25    // 800 / 32
-	ArenaTilesHeight  = 18    // 576 / 32 (adjusted for clean division)
+	TileSize          = 32                          // World units per tile
+	ArenaTilesWidth   = 25                          // 800 / 32
+	ArenaTilesHeight  = 18                          // 576 / 32 (adjusted for clean division)
 	ArenaWidth        = ArenaTilesWidth * TileSize  // 800
 	ArenaHeight       = ArenaTilesHeight * TileSize // 576
-	MovementSpeed     = 4.0   // tiles per second
-	ClientTimeout     = 10 * time.Second // Timeout if no ping/input
-	HeartbeatInterval = 2 * time.Second  // How often clients should ping
+	MovementSpeed     = 4.0                         // tiles per second
+	ClientTimeout     = 10 * time.Second            // Timeout if no ping/input
+	HeartbeatInterval = 2 * time.Second             // How often clients should ping
 
 	// Game economy
-	StartingMoney     = 100
-	BuildingCost      = 50
+	StartingMoney = 100
+	BuildingCost  = 50
 
 	// Resource generation (money per second per building)
-	GeneratorIncome   = 10.0
+	GeneratorIncome = 10.0
 )
 
 type MessageType string
@@ -46,7 +46,7 @@ const (
 )
 
 type Message struct {
-	Type MessageType `json:"type"`
+	Type MessageType     `json:"type"`
 	Data json.RawMessage `json:"data"`
 }
 
@@ -79,7 +79,7 @@ type TerrainTile struct {
 }
 
 type InputMessage struct {
-	ClientId uint32          `json:"clientId"`
+	ClientId uint32         `json:"clientId"`
 	Commands []CommandFrame `json:"commands"`
 }
 
@@ -145,14 +145,14 @@ type Entity struct {
 }
 
 type Client struct {
-	Id                  uint32
-	Name                string
-	Addr                *net.UDPAddr
-	LastSeen            time.Time
-	OwnedUnits          []uint32 // Entity IDs of units owned by this player
-	Money               float32
-	LastProcessedSeq    uint32
-	LastAckTick         uint64 // For delta compression (not implemented)
+	Id               uint32
+	Name             string
+	Addr             *net.UDPAddr
+	LastSeen         time.Time
+	OwnedUnits       []uint32 // Entity IDs of units owned by this player
+	Money            float32
+	LastProcessedSeq uint32
+	LastAckTick      uint64 // For delta compression (not implemented)
 }
 
 // Map system types
@@ -427,7 +427,7 @@ func (s *GameServer) gameTick() {
 
 func (s *GameServer) handleMessages() error {
 	buffer := make([]byte, 1024)
-	
+
 	for {
 		n, clientAddr, err := s.conn.ReadFromUDP(buffer)
 		if err != nil {
@@ -1009,6 +1009,112 @@ func (s *GameServer) calculateBoxFormation(centerX, centerY, numUnits int) []Til
 	return positions
 }
 
+// calculateBoxFormationOriented creates a grid pattern with tip at target point
+func (s *GameServer) calculateBoxFormationOriented(tipX, tipY, numUnits int, direction string) []TilePosition {
+	positions := make([]TilePosition, 0, numUnits)
+
+	// Calculate grid dimensions (roughly square)
+	gridSize := int(math.Ceil(math.Sqrt(float64(numUnits))))
+
+	// Position[0] (closest unit) should be at (tipX, tipY)
+	// Grid extends backward from tip based on movement direction
+	// Using reversed iteration or adjusted start position to ensure tip is position[0]
+
+	var startX, startY int
+	var colDir, rowDir int // Direction multipliers for grid expansion
+
+	switch direction {
+	case "E": // Moving east, tip on right, grid extends left/up-down
+		startX = tipX
+		startY = tipY - gridSize/2
+		colDir = -1 // Columns go left (west)
+		rowDir = 1  // Rows go down (south)
+	case "W": // Moving west, tip on left, grid extends right/up-down
+		startX = tipX
+		startY = tipY - gridSize/2
+		colDir = 1 // Columns go right (east)
+		rowDir = 1 // Rows go down (south)
+	case "N": // Moving north, tip on top, grid extends down/left-right
+		startX = tipX - gridSize/2
+		startY = tipY
+		colDir = 1 // Columns go right (east)
+		rowDir = 1 // Rows go down (south)
+	case "S": // Moving south, tip on bottom, grid extends up/left-right
+		startX = tipX - gridSize/2
+		startY = tipY
+		colDir = 1  // Columns go right (east)
+		rowDir = -1 // Rows go up (north)
+	case "NE": // Moving northeast, tip top-right, grid extends left/down
+		startX = tipX
+		startY = tipY
+		colDir = -1 // Columns go left (west)
+		rowDir = 1  // Rows go down (south)
+	case "NW": // Moving northwest, tip top-left, grid extends right/down
+		startX = tipX
+		startY = tipY
+		colDir = 1 // Columns go right (east)
+		rowDir = 1 // Rows go down (south)
+	case "SE": // Moving southeast, tip bottom-right, grid extends left/up
+		startX = tipX
+		startY = tipY
+		colDir = -1 // Columns go left (west)
+		rowDir = -1 // Rows go up (north)
+	case "SW": // Moving southwest, tip bottom-left, grid extends right/up
+		startX = tipX
+		startY = tipY
+		colDir = 1  // Columns go right (east)
+		rowDir = -1 // Rows go up (north)
+	default: // Fallback to centered
+		startX = tipX - gridSize/2
+		startY = tipY - gridSize/2
+		colDir = 1
+		rowDir = 1
+	}
+
+	for i := 0; i < numUnits; i++ {
+		row := i / gridSize
+		col := i % gridSize
+
+		tileX := startX + (col * colDir)
+		tileY := startY + (row * rowDir)
+
+		// Check if tile is passable (includes bounds, terrain, and buildings)
+		if !s.isTilePassable(tileX, tileY) {
+			continue
+		}
+
+		positions = append(positions, TilePosition{X: tileX, Y: tileY})
+	}
+
+	// If we couldn't find enough positions, find nearest passable tiles
+	spiralOffset := 0
+	for len(positions) < numUnits {
+		searchX := tipX + spiralOffset
+		searchY := tipY + spiralOffset
+		fallbackPos := s.findNearestPassableTile(searchX, searchY, 10)
+
+		// Check if this position is already in the list
+		isDuplicate := false
+		for _, pos := range positions {
+			if pos.X == fallbackPos.X && pos.Y == fallbackPos.Y {
+				isDuplicate = true
+				break
+			}
+		}
+
+		if !isDuplicate {
+			positions = append(positions, fallbackPos)
+		}
+
+		spiralOffset++
+		if spiralOffset > 20 {
+			positions = append(positions, fallbackPos)
+		}
+	}
+
+	return positions
+}
+
 // calculateLineFormation creates a horizontal line
 func (s *GameServer) calculateLineFormation(centerX, centerY, numUnits int) []TilePosition {
 	positions := make([]TilePosition, 0, numUnits)
@@ -1059,6 +1165,90 @@ func (s *GameServer) calculateLineFormation(centerX, centerY, numUnits int) []Ti
 	return positions
 }
 
+// calculateLineFormationOriented creates a line parallel to movement direction
+func (s *GameServer) calculateLineFormationOriented(tipX, tipY, numUnits int, direction string) []TilePosition {
+	positions := make([]TilePosition, 0, numUnits)
+
+	// Line extends backward from click point (opposite to movement direction)
+	// Position[0] is at click point (tip), rest extend backward toward origin
+	// For horizontal movement (E/W), create horizontal line extending opposite
+	// For vertical movement (N/S), create vertical line extending opposite
+	// For diagonal, create diagonal line extending opposite
+
+	var dx, dy int // Direction to extend backward (opposite of movement)
+
+	switch direction {
+	case "E": // Moving east → line extends west (negative X)
+		dx = -1
+		dy = 0
+	case "W": // Moving west → line extends east (positive X)
+		dx = 1
+		dy = 0
+	case "N": // Moving north → line extends south (positive Y)
+		dx = 0
+		dy = 1
+	case "S": // Moving south → line extends north (negative Y)
+		dx = 0
+		dy = -1
+	case "NE": // Moving northeast → line extends southwest
+		dx = -1
+		dy = 1
+	case "SW": // Moving southwest → line extends northeast
+		dx = 1
+		dy = -1
+	case "NW": // Moving northwest → line extends southeast
+		dx = 1
+		dy = 1
+	case "SE": // Moving southeast → line extends northwest
+		dx = -1
+		dy = -1
+	default: // Fallback to extending west
+		dx = -1
+		dy = 0
+	}
+
+	// Start at click point (tip), extend backward
+	for i := 0; i < numUnits; i++ {
+		tileX := tipX + (dx * i)
+		tileY := tipY + (dy * i)
+
+		// Check if tile is passable
+		if !s.isTilePassable(tileX, tileY) {
+			continue
+		}
+
+		positions = append(positions, TilePosition{X: tileX, Y: tileY})
+	}
+
+	// If we couldn't find enough positions, find nearest passable tiles
+	spiralOffset := 0
+	for len(positions) < numUnits {
+		searchX := tipX
+		searchY := tipY + spiralOffset
+		fallbackPos := s.findNearestPassableTile(searchX, searchY, 10)
+
+		// Check if this position is already in the list
+		isDuplicate := false
+		for _, pos := range positions {
+			if pos.X == fallbackPos.X && pos.Y == fallbackPos.Y {
+				isDuplicate = true
+				break
+			}
+		}
+
+		if !isDuplicate {
+			positions = append(positions, fallbackPos)
+		}
+
+		spiralOffset++
+		if spiralOffset > 20 {
+			positions = append(positions, fallbackPos)
+		}
+	}
+
+	return positions
+}
+
 // calculateSpiralFormation creates a spiral pattern from center
 func (s *GameServer) calculateSpiralFormation(centerX, centerY, numUnits int) []TilePosition {
 	positions := make([]TilePosition, 0, numUnits)
@@ -1093,6 +1283,74 @@ func (s *GameServer) calculateSpiralFormation(centerX, centerY, numUnits int) []
 	}
 
 	return positions
+}
+
+// calculateUnitCentroid calculates the average position of selected units
+func (s *GameServer) calculateUnitCentroid(unitIds []uint32) (float64, float64) {
+	if len(unitIds) == 0 {
+		return 0, 0
+	}
+
+	sumX, sumY := 0, 0
+	for _, unitId := range unitIds {
+		entity := s.entities[unitId]
+		if entity == nil {
+			continue
+		}
+		sumX += entity.TileX
+		sumY += entity.TileY
+	}
+
+	return float64(sumX) / float64(len(unitIds)), float64(sumY) / float64(len(unitIds))
+}
+
+// calculateMovementDirection determines direction vector from units to target
+func (s *GameServer) calculateMovementDirection(unitIds []uint32, targetX, targetY int) (dx, dy float64) {
+	centroidX, centroidY := s.calculateUnitCentroid(unitIds)
+
+	// Direction vector (normalized)
+	dx = float64(targetX) - centroidX
+	dy = float64(targetY) - centroidY
+	length := math.Sqrt(dx*dx + dy*dy)
+
+	if length > 0 {
+		dx /= length
+		dy /= length
+	}
+
+	return dx, dy
+}
+
+// getPrimaryDirection converts direction vector to 8-way cardinal/ordinal direction
+func getPrimaryDirection(dx, dy float64) string {
+	absDx := math.Abs(dx)
+	absDy := math.Abs(dy)
+
+	if absDx > absDy*2 {
+		// Strongly horizontal
+		if dx > 0 {
+			return "E"
+		}
+		return "W"
+	} else if absDy > absDx*2 {
+		// Strongly vertical
+		if dy > 0 {
+			return "S"
+		}
+		return "N"
+	} else {
+		// Diagonal
+		if dx > 0 && dy > 0 {
+			return "SE"
+		}
+		if dx > 0 && dy < 0 {
+			return "NE"
+		}
+		if dx < 0 && dy > 0 {
+			return "SW"
+		}
+		return "NW"
+	}
 }
 
 func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
@@ -1152,13 +1410,34 @@ func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 		return
 	}
 
-	// Sort unit IDs for determinism
+	// Sort units by distance to target (closest first becomes tip)
 	sort.Slice(validUnitIds, func(i, j int) bool {
-		return validUnitIds[i] < validUnitIds[j]
+		entity1 := s.entities[validUnitIds[i]]
+		entity2 := s.entities[validUnitIds[j]]
+		// Manhattan distance
+		dist1 := abs(entity1.TileX-tileX) + abs(entity1.TileY-tileY)
+		dist2 := abs(entity2.TileX-tileX) + abs(entity2.TileY-tileY)
+		return dist1 < dist2
 	})
 
-	// Calculate formation positions
-	formationPositions := s.calculateFormation(formation, tileX, tileY, len(validUnitIds))
+	// Calculate movement direction for oriented formations
+	dx, dy := s.calculateMovementDirection(validUnitIds, tileX, tileY)
+	direction := getPrimaryDirection(dx, dy)
+
+	// Calculate formation positions (oriented based on movement direction)
+	var formationPositions []TilePosition
+	switch formation {
+	case "box":
+		formationPositions = s.calculateBoxFormationOriented(tileX, tileY, len(validUnitIds), direction)
+	case "line":
+		formationPositions = s.calculateLineFormationOriented(tileX, tileY, len(validUnitIds), direction)
+	case "spread":
+		// Spread formation doesn't need orientation (radially symmetric)
+		formationPositions = s.calculateSpiralFormation(tileX, tileY, len(validUnitIds))
+	default:
+		// Default to box formation
+		formationPositions = s.calculateBoxFormationOriented(tileX, tileY, len(validUnitIds), direction)
+	}
 
 	// Assign each unit to its formation position using pathfinding
 	for i, unitId := range validUnitIds {
@@ -1221,8 +1500,8 @@ func (s *GameServer) getSpawnPosition(teamId int) (int, int) {
 				offsetY := 0
 				if spawn.Radius > 0 {
 					// Random offset within radius (simplified - not true circle)
-					offsetX = (attempt % (spawn.Radius * 2 + 1)) - spawn.Radius
-					offsetY = (attempt / (spawn.Radius * 2 + 1)) - spawn.Radius
+					offsetX = (attempt % (spawn.Radius*2 + 1)) - spawn.Radius
+					offsetY = (attempt / (spawn.Radius*2 + 1)) - spawn.Radius
 				}
 
 				x := spawn.X + offsetX

@@ -68,12 +68,12 @@ func TestPathfindingAroundCluster(t *testing.T) {
 
 	// Verify path doesn't go through any rock in the cluster
 	rockPositions := map[string]bool{
-		"9,7":   true,
-		"10,7":  true,
-		"11,7":  true,
-		"9,8":   true,
-		"10,8":  true,
-		"11,8":  true,
+		"9,7":  true,
+		"10,7": true,
+		"11,7": true,
+		"9,8":  true,
+		"10,8": true,
+		"11,8": true,
 	}
 
 	for i, waypoint := range path {
@@ -441,6 +441,334 @@ func TestTerrainPassability(t *testing.T) {
 	}
 
 	t.Log("Terrain passability checks working correctly")
+}
+
+// TestDirectionCalculation tests the 8-way direction classification
+func TestDirectionCalculation(t *testing.T) {
+	tests := []struct {
+		name     string
+		dx       float64
+		dy       float64
+		expected string
+	}{
+		{"Pure East", 1.0, 0.0, "E"},
+		{"Pure West", -1.0, 0.0, "W"},
+		{"Pure North", 0.0, -1.0, "N"},
+		{"Pure South", 0.0, 1.0, "S"},
+		{"Northeast", 0.7, -0.7, "NE"},
+		{"Northwest", -0.7, -0.7, "NW"},
+		{"Southeast", 0.7, 0.7, "SE"},
+		{"Southwest", -0.7, 0.7, "SW"},
+		{"Mostly East", 0.9, 0.2, "E"},
+		{"Mostly North", 0.2, -0.9, "N"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getPrimaryDirection(tt.dx, tt.dy)
+			if result != tt.expected {
+				t.Errorf("getPrimaryDirection(%v, %v) = %v, expected %v",
+					tt.dx, tt.dy, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestBoxFormationOriented tests that box formations orient correctly
+func TestBoxFormationOriented(t *testing.T) {
+	mapData := &MapData{
+		Width:          30,
+		Height:         30,
+		TileSize:       32,
+		DefaultTerrain: TerrainType{Type: "grass", Passable: true},
+		Tiles:          map[TileCoord]TerrainType{},
+		Features:       []Feature{},
+		SpawnPoints:    []SpawnPoint{},
+	}
+
+	server := &GameServer{
+		mapData:  mapData,
+		entities: make(map[uint32]*Entity),
+	}
+
+	tests := []struct {
+		name      string
+		direction string
+		tipX      int
+		tipY      int
+		numUnits  int
+	}{
+		{"East formation", "E", 15, 15, 5},
+		{"West formation", "W", 15, 15, 5},
+		{"North formation", "N", 15, 15, 5},
+		{"South formation", "S", 15, 15, 5},
+		{"Northeast formation", "NE", 15, 15, 5},
+		{"Northwest formation", "NW", 15, 15, 5},
+		{"Southeast formation", "SE", 15, 15, 5},
+		{"Southwest formation", "SW", 15, 15, 5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			positions := server.calculateBoxFormationOriented(tt.tipX, tt.tipY, tt.numUnits, tt.direction)
+
+			if len(positions) == 0 {
+				t.Error("No positions returned")
+				return
+			}
+
+			// Verify we got the expected number of positions
+			if len(positions) != tt.numUnits {
+				t.Errorf("Expected %d positions, got %d", tt.numUnits, len(positions))
+			}
+
+			// Verify all positions are unique
+			seen := make(map[string]bool)
+			for _, pos := range positions {
+				key := formatPos(pos.X, pos.Y)
+				if seen[key] {
+					t.Errorf("Duplicate position in formation: (%d,%d)", pos.X, pos.Y)
+				}
+				seen[key] = true
+			}
+
+			// Verify at least one position is at or very near the tip
+			// (tip might be adjusted if blocked, but should be close)
+			foundNearTip := false
+			for _, pos := range positions {
+				distX := abs(pos.X - tt.tipX)
+				distY := abs(pos.Y - tt.tipY)
+				if distX <= 2 && distY <= 2 {
+					foundNearTip = true
+					break
+				}
+			}
+			if !foundNearTip {
+				t.Errorf("No position found near tip (%d,%d)", tt.tipX, tt.tipY)
+			}
+
+			t.Logf("%s: %d positions", tt.direction, len(positions))
+		})
+	}
+}
+
+// TestLineFormationOriented tests that line formations are perpendicular to movement
+func TestLineFormationOriented(t *testing.T) {
+	mapData := &MapData{
+		Width:          30,
+		Height:         30,
+		TileSize:       32,
+		DefaultTerrain: TerrainType{Type: "grass", Passable: true},
+		Tiles:          map[TileCoord]TerrainType{},
+		Features:       []Feature{},
+		SpawnPoints:    []SpawnPoint{},
+	}
+
+	server := &GameServer{
+		mapData:  mapData,
+		entities: make(map[uint32]*Entity),
+	}
+
+	tests := []struct {
+		name         string
+		direction    string
+		tipX         int
+		tipY         int
+		numUnits     int
+		expectLinear bool
+		checkAxis    string // "X" or "Y" for which should be constant
+	}{
+		{"East movement (horizontal line)", "E", 15, 15, 5, true, "Y"},
+		{"West movement (horizontal line)", "W", 15, 15, 5, true, "Y"},
+		{"North movement (vertical line)", "N", 15, 15, 5, true, "X"},
+		{"South movement (vertical line)", "S", 15, 15, 5, true, "X"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			positions := server.calculateLineFormationOriented(tt.tipX, tt.tipY, tt.numUnits, tt.direction)
+
+			if len(positions) == 0 {
+				t.Error("No positions returned")
+				return
+			}
+
+			// Verify unique positions
+			seen := make(map[string]bool)
+			for _, pos := range positions {
+				key := formatPos(pos.X, pos.Y)
+				if seen[key] {
+					t.Errorf("Duplicate position in formation: (%d,%d)", pos.X, pos.Y)
+				}
+				seen[key] = true
+			}
+
+			// Verify line is linear along expected axis
+			if tt.expectLinear {
+				if tt.checkAxis == "X" {
+					// All X values should be the same (vertical line)
+					firstX := positions[0].X
+					for i, pos := range positions {
+						if pos.X != firstX {
+							t.Errorf("Position %d has X=%d, expected X=%d (vertical line)", i, pos.X, firstX)
+						}
+					}
+				} else if tt.checkAxis == "Y" {
+					// All Y values should be the same (horizontal line)
+					firstY := positions[0].Y
+					for i, pos := range positions {
+						if pos.Y != firstY {
+							t.Errorf("Position %d has Y=%d, expected Y=%d (horizontal line)", i, pos.Y, firstY)
+						}
+					}
+				}
+			}
+
+			t.Logf("%s: %d positions along %s axis", tt.direction, len(positions), tt.checkAxis)
+		})
+	}
+}
+
+// TestCentroidCalculation tests the unit centroid calculation
+func TestCentroidCalculation(t *testing.T) {
+	mapData := &MapData{
+		Width:          30,
+		Height:         30,
+		TileSize:       32,
+		DefaultTerrain: TerrainType{Type: "grass", Passable: true},
+		Tiles:          map[TileCoord]TerrainType{},
+		Features:       []Feature{},
+		SpawnPoints:    []SpawnPoint{},
+	}
+
+	server := &GameServer{
+		mapData:  mapData,
+		entities: make(map[uint32]*Entity),
+	}
+
+	// Add test units
+	server.entities[1] = &Entity{Id: 1, TileX: 5, TileY: 5}
+	server.entities[2] = &Entity{Id: 2, TileX: 10, TileY: 5}
+	server.entities[3] = &Entity{Id: 3, TileX: 5, TileY: 10}
+
+	tests := []struct {
+		name      string
+		unitIds   []uint32
+		expectedX float64
+		expectedY float64
+	}{
+		{"Single unit", []uint32{1}, 5.0, 5.0},
+		{"Two units horizontal", []uint32{1, 2}, 7.5, 5.0},
+		{"Three units L-shape", []uint32{1, 2, 3}, 6.666666, 6.666666},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			x, y := server.calculateUnitCentroid(tt.unitIds)
+
+			// Allow small floating point tolerance
+			if !floatNear(x, tt.expectedX, 0.01) || !floatNear(y, tt.expectedY, 0.01) {
+				t.Errorf("Centroid = (%.2f, %.2f), expected (%.2f, %.2f)", x, y, tt.expectedX, tt.expectedY)
+			}
+
+			t.Logf("Centroid for %v: (%.2f, %.2f)", tt.unitIds, x, y)
+		})
+	}
+}
+
+// Helper function
+func floatNear(a, b, tolerance float64) bool {
+	diff := a - b
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= tolerance
+}
+
+// TestLineFormationBackwardExtension tests that line formations extend backward from click
+func TestLineFormationBackwardExtension(t *testing.T) {
+	mapData := &MapData{
+		Width:          30,
+		Height:         30,
+		TileSize:       32,
+		DefaultTerrain: TerrainType{Type: "grass", Passable: true},
+		Tiles:          map[TileCoord]TerrainType{},
+		Features:       []Feature{},
+		SpawnPoints:    []SpawnPoint{},
+	}
+
+	server := &GameServer{
+		mapData:  mapData,
+		entities: make(map[uint32]*Entity),
+	}
+
+	// Scenario 1: Units moving south, line should extend north from click
+	// Units at (10,5), click at (10,15) → expect (10,15), (10,14), (10,13)
+	server.entities[1] = &Entity{Id: 1, TileX: 10, TileY: 5}
+	server.entities[2] = &Entity{Id: 2, TileX: 11, TileY: 5}
+	server.entities[3] = &Entity{Id: 3, TileX: 12, TileY: 5}
+
+	dx, dy := server.calculateMovementDirection([]uint32{1, 2, 3}, 10, 15)
+	direction := getPrimaryDirection(dx, dy)
+
+	if direction != "S" {
+		t.Errorf("Expected direction S (south), got %s", direction)
+	}
+
+	positions := server.calculateLineFormationOriented(10, 15, 3, direction)
+
+	// Verify position[0] is at click point
+	if positions[0].X != 10 || positions[0].Y != 15 {
+		t.Errorf("Position[0] should be at click point (10,15), got (%d,%d)", positions[0].X, positions[0].Y)
+	}
+
+	// Verify line extends north (negative Y)
+	expectedPositions := []TilePosition{{10, 15}, {10, 14}, {10, 13}}
+	for i, expected := range expectedPositions {
+		if i >= len(positions) {
+			t.Errorf("Not enough positions, expected %d, got %d", len(expectedPositions), len(positions))
+			break
+		}
+		if positions[i].X != expected.X || positions[i].Y != expected.Y {
+			t.Errorf("Position[%d] expected (%d,%d), got (%d,%d)", i, expected.X, expected.Y, positions[i].X, positions[i].Y)
+		}
+	}
+
+	t.Logf("Scenario 1: Moving south, line extends north from (10,15): %v", positions)
+
+	// Scenario 2: Units moving east, line should extend west from click
+	// Units at (5,10), (5,11), (5,12), click at (15,10) → expect (15,10), (14,10), (13,10)
+	server.entities[4] = &Entity{Id: 4, TileX: 5, TileY: 10}
+	server.entities[5] = &Entity{Id: 5, TileX: 5, TileY: 11}
+	server.entities[6] = &Entity{Id: 6, TileX: 5, TileY: 12}
+
+	dx, dy = server.calculateMovementDirection([]uint32{4, 5, 6}, 15, 10)
+	direction = getPrimaryDirection(dx, dy)
+
+	if direction != "E" {
+		t.Errorf("Expected direction E (east), got %s", direction)
+	}
+
+	positions = server.calculateLineFormationOriented(15, 10, 3, direction)
+
+	// Verify position[0] is at click point
+	if positions[0].X != 15 || positions[0].Y != 10 {
+		t.Errorf("Position[0] should be at click point (15,10), got (%d,%d)", positions[0].X, positions[0].Y)
+	}
+
+	// Verify line extends west (negative X)
+	expectedPositions = []TilePosition{{15, 10}, {14, 10}, {13, 10}}
+	for i, expected := range expectedPositions {
+		if i >= len(positions) {
+			t.Errorf("Not enough positions, expected %d, got %d", len(expectedPositions), len(positions))
+			break
+		}
+		if positions[i].X != expected.X || positions[i].Y != expected.Y {
+			t.Errorf("Position[%d] expected (%d,%d), got (%d,%d)", i, expected.X, expected.Y, positions[i].X, positions[i].Y)
+		}
+	}
+
+	t.Logf("Scenario 2: Moving east, line extends west from (15,10): %v", positions)
 }
 
 // Helper function

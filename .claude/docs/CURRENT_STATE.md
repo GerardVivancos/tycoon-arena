@@ -1,8 +1,8 @@
 # Current Project State - Quick Reference
 
 **Last Updated:** 2025-10-13
-**Sprint:** Test Framework Phase 2 - ✅ Complete
-**Previous:** Pathfinding & Testing Phase 1 - ✅ Complete
+**Current Work:** No active work
+**Previous Sprint:** Formation Orientation Refactor - ✅ Complete
 
 ---
 
@@ -12,7 +12,7 @@
 - ✅ 5 workers per player, multi-unit selection and control
 - ✅ **A* pathfinding** - Units navigate around obstacles intelligently
 - ✅ **Dynamic collision avoidance** - Units wait/reroute when blocked
-- ✅ Tile-based movement with 3 formation types (Box, Line, Spread)
+- ✅ **Direction-aware formations** - Box, Line, Spread formations orient based on movement direction
 - ✅ Isometric rendering with terrain visualization
 - ✅ Drag-to-select box selection
 - ✅ Building placement (generators that produce $10/sec)
@@ -21,9 +21,10 @@
 - ✅ Client-side prediction and interpolation
 - ✅ 40×30 tile maps with terrain (grass, rocks, obstacles)
 - ✅ Camera zoom (0.5× to 2.0×) and pan (WASD/arrows/trackpad)
-- ✅ **Unit tests** - 5 passing tests for pathfinding and game logic
-- ✅ **Scenario test framework** - JSON scenarios → SVG diagrams → automated execution
+- ✅ **Unit tests** - 15 passing tests (pathfinding, formations, terrain, orientation, positioning)
+- ✅ **Scenario test framework** - Declarative JSON scenarios → automated execution
 - ✅ **Test runner** - 2 passing scenario tests integrated with `go test`
+- ✅ **Total: 17 tests** all passing
 
 **Current Map:** 40×30 tiles with 7 rock obstacles
 **Testing:** Full declarative test framework (Phase 1 & 2 complete)
@@ -315,7 +316,24 @@ realtime-game-engine/
 
 ---
 
+---
+
 ## Recently Completed
+
+### Formation Positioning Fix ✅
+- ✅ **Closest unit becomes tip** - Units sorted by distance to click point
+- ✅ **Line extends backward** - Position[0] at click, rest extend toward origin
+- ✅ **Box tip at click** - Position[0] at click point, grid extends backward
+- ✅ **Age of Empires II behavior** - Matches expected RTS formation positioning
+- ✅ New test: TestLineFormationBackwardExtension (2 scenarios)
+- ✅ All 17 tests passing
+
+### Formation Orientation Refactor ✅
+- ✅ Direction-based formation orientation (8 compass directions)
+- ✅ Formation tip at click point (not center)
+- ✅ Line formations parallel to movement direction
+- ✅ Box formations extend backward from tip
+- ✅ Comprehensive tests (direction calculation, oriented formations)
 
 ### Test Framework Phase 2 ✅
 - ✅ Scenario runner executes JSON scenarios in isolated server
@@ -337,10 +355,18 @@ realtime-game-engine/
 
 ## Next Steps
 
+### High Priority
+- [ ] **Formation Movement** - Units maintain formation shape while traveling (not just at destination)
+  - Leader-follower system: tip unit pathfinds, others maintain offset
+  - Formation breaks on obstacles, units pathfind independently
+  - Speed synchronization (leader waits for stragglers)
+  - Age of Empires II-style cohesive group movement
+  - See: `.claude/docs/FORMATION_MOVEMENT_PLAN.md`
+  - Estimated: 2-3 days
+
 ### Potential Features
 - [ ] Win conditions (resource threshold, building destruction, etc.)
 - [ ] Different unit types (ranged, melee, fast scouts)
-- [ ] Pathfinding around obstacles (A* algorithm)
 - [ ] Multi-tile terrain features (forests 3×3, mountains 5×5)
 - [ ] Fog of war / line of sight
 - [ ] Minimap
@@ -355,6 +381,10 @@ realtime-game-engine/
 For deep dives, see:
 - **Architecture**: `.claude/docs/ARCHITECTURE.md` (needs update for Sprint 3)
 - **Network Protocol**: `.claude/docs/NETWORK_PROTOCOL.md`
+- **Formation Movement**: `.claude/docs/FORMATION_MOVEMENT_PLAN.md` (next major feature)
+- **Formation Refactor**: `.claude/docs/FORMATION_REFACTOR.md` (completed)
+- **Pathfinding**: `.claude/docs/PATHFINDING_IMPLEMENTATION.md`
+- **Testing**: `.claude/docs/TEST_FRAMEWORK.md`
 - **Sprint 3 Details**: `.claude/docs/sprints/SPRINT_3_PROGRESS.md`
 - **Sprint 2 Details**: `.claude/docs/sprints/SPRINT_2_COMPLETE.md`
 - **Project Overview**: `Claude.md`
