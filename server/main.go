@@ -55,13 +55,26 @@ type HelloMessage struct {
 }
 
 type WelcomeMessage struct {
-	ClientId          uint32 `json:"clientId"`
-	TickRate          int    `json:"tickRate"`
-	HeartbeatInterval int    `json:"heartbeatInterval"` // milliseconds
-	InputRedundancy   int    `json:"inputRedundancy"`   // How many commands to send per input
-	TileSize          int    `json:"tileSize"`          // World units per tile
-	ArenaTilesWidth   int    `json:"arenaTilesWidth"`
-	ArenaTilesHeight  int    `json:"arenaTilesHeight"`
+	ClientId          uint32      `json:"clientId"`
+	TickRate          int         `json:"tickRate"`
+	HeartbeatInterval int         `json:"heartbeatInterval"` // milliseconds
+	InputRedundancy   int         `json:"inputRedundancy"`   // How many commands to send per input
+	TileSize          int         `json:"tileSize"`          // World units per tile
+	ArenaTilesWidth   int         `json:"arenaTilesWidth"`
+	ArenaTilesHeight  int         `json:"arenaTilesHeight"`
+	TerrainData       TerrainData `json:"terrainData"` // Terrain information for rendering
+}
+
+type TerrainData struct {
+	DefaultType string        `json:"defaultType"` // Default terrain type (e.g. "grass")
+	Tiles       []TerrainTile `json:"tiles"`       // Non-default terrain tiles
+}
+
+type TerrainTile struct {
+	X      int     `json:"x"`
+	Y      int     `json:"y"`
+	Type   string  `json:"type"`
+	Height float32 `json:"height"`
 }
 
 type InputMessage struct {
@@ -511,6 +524,17 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 
 	log.Printf("Client %d (%s) connected from %s with %d workers", clientId, hello.PlayerName, clientAddr.String(), len(ownedUnits))
 
+	// Build terrain data for client
+	terrainTiles := make([]TerrainTile, 0, len(s.mapData.Tiles))
+	for coord, terrain := range s.mapData.Tiles {
+		terrainTiles = append(terrainTiles, TerrainTile{
+			X:      coord.X,
+			Y:      coord.Y,
+			Type:   terrain.Type,
+			Height: terrain.Height,
+		})
+	}
+
 	// Send welcome message
 	welcome := WelcomeMessage{
 		ClientId:          clientId,
@@ -520,6 +544,10 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 		TileSize:          TileSize,
 		ArenaTilesWidth:   s.mapData.Width,
 		ArenaTilesHeight:  s.mapData.Height,
+		TerrainData: TerrainData{
+			DefaultType: s.mapData.DefaultTerrain.Type,
+			Tiles:       terrainTiles,
+		},
 	}
 
 	s.sendMessage(Message{
@@ -625,6 +653,41 @@ type TilePosition struct {
 	X, Y int
 }
 
+// findNearestPassableTile searches in a spiral pattern for the nearest passable tile
+// Returns the input position if already passable, or nearest alternative
+func (s *GameServer) findNearestPassableTile(startX, startY, maxRadius int) TilePosition {
+	// Check center first
+	if s.isTilePassable(startX, startY) {
+		return TilePosition{X: startX, Y: startY}
+	}
+
+	// Spiral outward looking for passable tile
+	directions := []TilePosition{{1, 0}, {0, 1}, {-1, 0}, {0, -1}} // Right, Down, Left, Up
+	x, y := startX, startY
+	steps := 1
+
+	for radius := 1; radius <= maxRadius; radius++ {
+		for _, dir := range directions {
+			for step := 0; step < steps && radius <= maxRadius; step++ {
+				x += dir.X
+				y += dir.Y
+
+				if s.isTilePassable(x, y) {
+					return TilePosition{X: x, Y: y}
+				}
+			}
+
+			// Increase steps after every 2 directions
+			if dir.X == 0 {
+				steps++
+			}
+		}
+	}
+
+	// Fallback: return original position (unit will stack, but at least won't crash)
+	return TilePosition{X: startX, Y: startY}
+}
+
 // calculateFormation returns tile positions for units in the specified formation
 func (s *GameServer) calculateFormation(formation string, centerX, centerY, numUnits int) []TilePosition {
 	switch formation {
@@ -658,22 +721,22 @@ func (s *GameServer) calculateBoxFormation(centerX, centerY, numUnits int) []Til
 		tileX := startX + col
 		tileY := startY + row
 
-		// Validate bounds
-		if tileX < 0 || tileX >= s.mapData.Width || tileY < 0 || tileY >= s.mapData.Height {
-			continue
-		}
-
-		// Skip if occupied by building
-		if s.isTileOccupiedByBuilding(tileX, tileY) {
+		// Check if tile is passable (includes bounds, terrain, and buildings)
+		if !s.isTilePassable(tileX, tileY) {
 			continue
 		}
 
 		positions = append(positions, TilePosition{X: tileX, Y: tileY})
 	}
 
-	// If we couldn't find enough positions, fill remaining with center tile
+	// If we couldn't find enough positions, find nearest passable tiles
+	// This prevents unit stacking when formations are partially blocked
 	for len(positions) < numUnits {
-		positions = append(positions, TilePosition{X: centerX, Y: centerY})
+		// Find nearest passable tile to center (search up to 10 tiles away)
+		fallbackPos := s.findNearestPassableTile(centerX, centerY, 10)
+		positions = append(positions, fallbackPos)
+		// Move center slightly to avoid finding same tile again
+		centerX++
 	}
 
 	return positions
@@ -690,22 +753,21 @@ func (s *GameServer) calculateLineFormation(centerX, centerY, numUnits int) []Ti
 		tileX := startX + i
 		tileY := centerY
 
-		// Validate bounds
-		if tileX < 0 || tileX >= s.mapData.Width || tileY < 0 || tileY >= s.mapData.Height {
-			continue
-		}
-
-		// Skip if occupied by building
-		if s.isTileOccupiedByBuilding(tileX, tileY) {
+		// Check if tile is passable (includes bounds, terrain, and buildings)
+		if !s.isTilePassable(tileX, tileY) {
 			continue
 		}
 
 		positions = append(positions, TilePosition{X: tileX, Y: tileY})
 	}
 
-	// Fill remaining with center tile
+	// If we couldn't find enough positions, find nearest passable tiles
 	for len(positions) < numUnits {
-		positions = append(positions, TilePosition{X: centerX, Y: centerY})
+		// Find nearest passable tile to center (search up to 10 tiles away)
+		fallbackPos := s.findNearestPassableTile(centerX, centerY, 10)
+		positions = append(positions, fallbackPos)
+		// Move center slightly to avoid finding same tile again
+		centerY++
 	}
 
 	return positions
@@ -715,8 +777,8 @@ func (s *GameServer) calculateLineFormation(centerX, centerY, numUnits int) []Ti
 func (s *GameServer) calculateSpiralFormation(centerX, centerY, numUnits int) []TilePosition {
 	positions := make([]TilePosition, 0, numUnits)
 
-	// Start with center
-	if !s.isTileOccupiedByBuilding(centerX, centerY) {
+	// Start with center if passable
+	if s.isTilePassable(centerX, centerY) {
 		positions = append(positions, TilePosition{X: centerX, Y: centerY})
 	}
 
@@ -731,12 +793,9 @@ func (s *GameServer) calculateSpiralFormation(centerX, centerY, numUnits int) []
 				x += dir.X
 				y += dir.Y
 
-				// Validate bounds
-				if x >= 0 && x < s.mapData.Width && y >= 0 && y < s.mapData.Height {
-					// Skip if occupied by building
-					if !s.isTileOccupiedByBuilding(x, y) {
-						positions = append(positions, TilePosition{X: x, Y: y})
-					}
+				// Check if tile is passable (includes bounds, terrain, and buildings)
+				if s.isTilePassable(x, y) {
+					positions = append(positions, TilePosition{X: x, Y: y})
 				}
 			}
 

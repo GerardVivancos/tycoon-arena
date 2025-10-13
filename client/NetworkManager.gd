@@ -1,6 +1,6 @@
 extends Node
 
-signal connected_to_server(client_id: int, tick_rate: int, tile_size: int, arena_tiles_width: int, arena_tiles_height: int)
+signal connected_to_server(client_id: int, tick_rate: int, tile_size: int, arena_tiles_width: int, arena_tiles_height: int, terrain_data: Dictionary)
 signal snapshot_received(snapshot: Dictionary)
 signal disconnected_from_server()
 
@@ -123,12 +123,14 @@ func handle_welcome(data: Dictionary):
 	tile_size = int(data.get("tileSize"))
 	arena_tiles_width = int(data.get("arenaTilesWidth"))
 	arena_tiles_height = int(data.get("arenaTilesHeight"))
+	var terrain_data = data.get("terrainData", {})
 	is_connected = true
 	heartbeat_timer = 0.0  # Reset timer
 	command_history.clear()  # Clear history on new connection
 	print("Connected! Client ID: %d, Tick Rate: %d, Heartbeat: %.1fs, Redundancy: %d" % [client_id, tick_rate, heartbeat_interval, input_redundancy])
 	print("Tile config: Size=%d, Arena=%dx%d tiles" % [tile_size, arena_tiles_width, arena_tiles_height])
-	connected_to_server.emit(client_id, tick_rate, tile_size, arena_tiles_width, arena_tiles_height)
+	print("Terrain: %d tiles, default=%s" % [terrain_data.get("tiles", []).size(), terrain_data.get("defaultType", "unknown")])
+	connected_to_server.emit(client_id, tick_rate, tile_size, arena_tiles_width, arena_tiles_height, terrain_data)
 
 func handle_snapshot(data: Dictionary):
 	current_tick = data.get("tick", 0)

@@ -2,6 +2,7 @@ extends Node2D
 
 @onready var network_manager = $NetworkManager
 @onready var entities_container = $Entities
+@onready var terrain_layer = $TerrainLayer
 @onready var camera = $Camera2D
 @onready var connection_label = $UI/ConnectionStatus
 @onready var fps_label = $UI/FPS
@@ -78,7 +79,7 @@ func _ready():
 	# Auto-connect on start
 	network_manager.connect_to_server("Player" + str(randi() % 1000))
 
-func _on_connected_to_server(client_id: int, tick_rate: int, tile_sz: int, tiles_w: int, tiles_h: int):
+func _on_connected_to_server(client_id: int, tick_rate: int, tile_sz: int, tiles_w: int, tiles_h: int, terrain_data: Dictionary):
 	local_client_id = client_id
 	tile_size = tile_sz
 	arena_tiles_width = tiles_w
@@ -114,7 +115,73 @@ func _on_connected_to_server(client_id: int, tick_rate: int, tile_sz: int, tiles
 		(max_y - min_y) - viewport_height
 	)
 
+	# Render terrain
+	render_terrain(terrain_data)
+
 	queue_redraw()  # Trigger grid drawing
+
+# Terrain rendering functions
+func render_terrain(terrain_data: Dictionary):
+	# Clear existing terrain (in case of reconnect)
+	for child in terrain_layer.get_children():
+		child.queue_free()
+
+	var default_type = terrain_data.get("defaultType", "grass")
+	var terrain_tiles = terrain_data.get("tiles", [])
+
+	# Render all tiles with default terrain (grass background)
+	for x in range(arena_tiles_width):
+		for y in range(arena_tiles_height):
+			create_terrain_tile(x, y, default_type, 0.0)
+
+	# Override with specific terrain tiles (rocks, etc.)
+	for tile_data in terrain_tiles:
+		var x = tile_data.get("x", 0)
+		var y = tile_data.get("y", 0)
+		var type = tile_data.get("type", "grass")
+		var height = tile_data.get("height", 0.0)
+		create_terrain_tile(x, y, type, height)
+
+func create_terrain_tile(tile_x: int, tile_y: int, type: String, height: float):
+	var tile = Polygon2D.new()
+
+	# Position at isometric coordinates
+	tile.position = tile_to_iso(float(tile_x), float(tile_y))
+
+	# Diamond shape for isometric tile (position is at top corner)
+	var points = PackedVector2Array([
+		Vector2(0, 0),                                      # Top corner
+		Vector2(ISO_TILE_WIDTH / 2, ISO_TILE_HEIGHT / 2),  # Right corner
+		Vector2(0, ISO_TILE_HEIGHT),                       # Bottom corner
+		Vector2(-ISO_TILE_WIDTH / 2, ISO_TILE_HEIGHT / 2)  # Left corner
+	])
+	tile.polygon = points
+
+	# Color based on terrain type
+	match type:
+		"grass":
+			tile.color = Color(0.15, 0.6, 0.15)  # Darker green for contrast with white grid
+		"rock":
+			tile.color = Color(0.5, 0.5, 0.5)  # Gray
+		"dirt":
+			tile.color = Color(0.6, 0.4, 0.2)  # Brown
+		"water":
+			tile.color = Color(0.2, 0.4, 0.9)  # Blue
+		"tree":
+			tile.color = Color(0.1, 0.6, 0.1)  # Dark green
+		_:
+			tile.color = Color(0.3, 0.3, 0.3)  # Default gray
+
+	# Z-index based on height (higher terrain drawn later = appears on top)
+	# Negative z_index so terrain is below entities
+	# Formula: -100 + (height * 10) so higher terrain has LESS negative z-index (draws later/on top)
+	tile.z_index = -100 + int(height * 10)
+
+	# Store height in metadata for future occlusion system
+	tile.set_meta("height", height)
+	tile.set_meta("terrain_type", type)
+
+	terrain_layer.add_child(tile)
 
 # Convert tile coordinates to isometric screen position
 func tile_to_iso(tile_x: float, tile_y: float) -> Vector2:
@@ -337,11 +404,11 @@ func _draw():
 			var p3 = tile_to_iso(float(x + 1), float(y + 1))
 			var p4 = tile_to_iso(float(x), float(y + 1))
 
-			# Draw diamond outline
-			draw_line(p1, p2, Color(0, 1, 0, 0.3), 1.0)
-			draw_line(p2, p3, Color(0, 1, 0, 0.3), 1.0)
-			draw_line(p3, p4, Color(0, 1, 0, 0.3), 1.0)
-			draw_line(p4, p1, Color(0, 1, 0, 0.3), 1.0)
+			# Draw diamond outline (white for contrast with green grass)
+			draw_line(p1, p2, Color(1, 1, 1, 0.15), 1.0)
+			draw_line(p2, p3, Color(1, 1, 1, 0.15), 1.0)
+			draw_line(p3, p4, Color(1, 1, 1, 0.15), 1.0)
+			draw_line(p4, p1, Color(1, 1, 1, 0.15), 1.0)
 
 	# Draw origin marker at tile (0,0) center
 	draw_circle(tile_to_iso(0, 0), 5.0, Color(1, 0, 0, 1.0))

@@ -1,7 +1,8 @@
 # Current Project State - Quick Reference
 
 **Last Updated:** 2025-10-13
-**Sprint:** Sprint 3 (RTS Controls & Formations) - In Progress
+**Sprint:** Sprint 3 (RTS Controls & Formations) - ✅ Complete
+**Current:** Map System (Phases 1-3) - ✅ Complete
 
 ---
 
@@ -10,15 +11,18 @@
 **Multiplayer RTS Game with:**
 - ✅ 5 workers per player, multi-unit selection and control
 - ✅ Tile-based movement with 3 formation types (Box, Line, Spread)
-- ✅ Isometric rendering (diamond grid visualization)
+- ✅ Isometric rendering with terrain visualization
 - ✅ Drag-to-select box selection
 - ✅ Building placement (generators that produce $10/sec)
 - ✅ Combat system (attack enemy buildings)
 - ✅ Server-authoritative networking (UDP, 20Hz tick rate)
 - ✅ Client-side prediction and interpolation
+- ✅ **NEW:** 40×30 tile maps with terrain (grass, rocks, obstacles)
+- ✅ **NEW:** Camera zoom (0.5× to 2.0×) and pan (WASD/arrows/trackpad)
+- ✅ **NEW:** Visual terrain rendering (green grass, gray rocks)
 
-**Current Map:** 25×18 tiles (800×576 px)
-**Next Feature:** Expanding map system with terrain and camera controls
+**Current Map:** 40×30 tiles with 7 rock obstacles
+**Next Feature:** Additional terrain features, win conditions, or more unit types
 
 ---
 
@@ -42,6 +46,8 @@ cd server && go run main.go
 - **1/2/3 keys**: Change formation (Box/Line/Spread)
 - **Q key**: Attack selected building
 - **Build button**: Place generator ($50 cost)
+- **Mouse wheel / Trackpad scroll**: Zoom in/out
+- **WASD / Arrow keys**: Pan camera
 
 ---
 
@@ -100,7 +106,7 @@ cd server && go run main.go
 - **Projection**: Square tiles → diamond grid
 - **Constants**: ISO_TILE_WIDTH=64, ISO_TILE_HEIGHT=32
 - **Functions**: `tile_to_iso()`, `iso_to_tile()`
-- **Visuals**: 3D-style buildings, units with shadows
+- **Visuals**: 3D-style buildings, units with shadows, terrain tiles
 
 ### 4. Building System ✅
 - **Generator**: Costs $50, produces $10/sec
@@ -119,6 +125,27 @@ cd server && go run main.go
 - **Tick rate**: 20 Hz (50ms per tick)
 - **Input redundancy**: Last 3 command frames per message
 - **Authority**: Server is authoritative for all game state
+
+### 7. Map System ✅
+- **File-based maps**: JSON format in `maps/` directory
+- **Dynamic size**: Server sends dimensions to client (currently 40×30)
+- **Terrain types**: Grass (passable), Rock (blocks movement/building)
+- **Server validation**: `isTilePassable()` checks terrain + buildings
+- **Spawn points**: Team-based spawn locations defined in map file
+
+### 8. Terrain Rendering ✅
+- **Visual tiles**: 1200 Polygon2D nodes (40×30 tiles)
+- **Grass background**: Green (0.2, 0.8, 0.2)
+- **Rock obstacles**: Gray (0.5, 0.5, 0.5) - 7 rocks in default map
+- **Z-indexing**: Terrain below entities, height-based ordering
+- **Metadata**: Height and type stored for future occlusion
+
+### 9. Camera System ✅
+- **Viewport**: 1280×720 (resizable)
+- **Zoom**: Mouse wheel / trackpad (0.5× to 2.0×)
+- **Pan**: WASD / Arrow keys (500 px/sec)
+- **Bounds**: Dynamic based on map size with 20% edge padding
+- **Zoom-aware**: Boundaries adjust for current zoom level
 
 ---
 
@@ -224,37 +251,48 @@ realtime-game-engine/
 ## Known Issues & Limitations
 
 ### Current Limitations
-1. **Map size**: Fixed 25×18 tiles (expanding in next phase)
-2. **No terrain**: All tiles are flat and passable
-3. **No camera controls**: Fixed camera (zoom/pan coming)
-4. **Formation edge cases**: Units may stack if formation blocked
-5. **No pathfinding**: Units move directly to target
+1. **No pathfinding**: Units move directly to target, no navigation around obstacles
+2. **Formation edge cases**: Units may stack if formation blocked by terrain
+3. **Single terrain layer**: No multi-tile features (forests, mountains) yet
+4. **No win conditions**: Game continues indefinitely
+5. **No fog of war**: All terrain visible at all times
 
 ### Known Quirks
 1. **Client IDs skip numbers**: Due to shared ID counter (cosmetic only)
 2. **Floor() for tiles**: Using `floor()` not `round()` for consistent tile ownership
 3. **Direct node references**: Selection rings use stored references (not `has_node()`)
+4. **Terrain overlap**: Rocks rendered as same tile size (no visual "tallness" beyond z-index)
 
 ---
 
-## Next Steps (In Progress)
+## Recently Completed
 
-### Map System (Current Focus)
-- [ ] Larger maps (80×60 to 120×100 tiles)
-- [ ] Terrain features (rocks, water, trees)
-- [ ] Multi-tile features (forests, mountains)
-- [ ] Map file format (JSON)
-- [ ] Passability system (terrain + buildings)
-- [ ] Camera zoom and pan
-- [ ] Occlusion/transparency for tall objects
+### Map System (Phases 1-3) ✅
+- ✅ 40×30 tile maps (expandable to 80×60 or larger)
+- ✅ Terrain rendering (grass, rocks)
+- ✅ Map file format (JSON)
+- ✅ Passability system (terrain + buildings)
+- ✅ Camera zoom and pan
+- ✅ Dynamic camera boundaries with zoom awareness
 
-### Future Features
-- [ ] Win conditions
-- [ ] Different unit types (ranged, melee)
-- [ ] Pathfinding around obstacles
-- [ ] Fog of war
+### Sprint 3 (RTS Controls) ✅
+- ✅ Multi-unit selection (5 workers per player)
+- ✅ Formation system (Box, Line, Spread)
+- ✅ Drag-to-select
+- ✅ Isometric rendering
+
+## Next Steps
+
+### Potential Features
+- [ ] Win conditions (resource threshold, building destruction, etc.)
+- [ ] Different unit types (ranged, melee, fast scouts)
+- [ ] Pathfinding around obstacles (A* algorithm)
+- [ ] Multi-tile terrain features (forests 3×3, mountains 5×5)
+- [ ] Fog of war / line of sight
 - [ ] Minimap
-- [ ] More building types
+- [ ] More building types (barracks, towers, walls)
+- [ ] Unit production buildings
+- [ ] Occlusion/transparency for tall objects
 
 ---
 

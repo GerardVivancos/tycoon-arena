@@ -155,21 +155,28 @@ Why this combination:
    - Network architecture refactored to Quake 3 model
    - See `.claude/docs/sprints/SPRINT_2_COMPLETE.md` for details
 
-   **Sprint 3 - RTS Controls & Formations (🚧 IN PROGRESS)**
+   **Sprint 3 - RTS Controls & Formations (✅ COMPLETE)**
    - ✅ Multi-unit RTS system (5 workers per player)
    - ✅ Formation movement (Box, Line, Spread)
    - ✅ Drag-to-select box selection
    - ✅ Isometric rendering with diamond grid
    - ✅ Enhanced selection visuals (double-ring, bright yellow)
    - ✅ Formation UI with hotkeys (1/2/3)
-   - 🚧 Gameplay tuning and balance
-   - 🚧 Win conditions
    - See `.claude/docs/sprints/SPRINT_3_PROGRESS.md` for details
+
+   **Map System - Phases 1-3 (✅ COMPLETE)**
+   - ✅ File-based map system with JSON format (40×30 tiles)
+   - ✅ Server-side terrain passability validation (rocks block movement)
+   - ✅ Camera zoom (mouse wheel / trackpad) and pan (WASD/arrows)
+   - ✅ Visual terrain rendering (grass background, gray rock obstacles)
+   - ✅ Dynamic camera boundaries with zoom awareness
+   - See `.claude/docs/MAP_SYSTEM.md` for details
 
    **Documentation**
    - All sprint and planning documentation is in `.claude/docs/`
    - See `.claude/docs/README.md` for full index
    - Network protocol: `.claude/docs/NETWORK_PROTOCOL.md`
+   - Current state: `.claude/docs/CURRENT_STATE.md`
 
    ## Notes on language choice — short guidance
 
