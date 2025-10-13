@@ -18,8 +18,11 @@
 ### Sprint 2 - Game Rules & Mechanics ✅
 - ✅ [Sprint 2 Complete](sprints/SPRINT_2_COMPLETE.md) - Building, resources, combat, and network refactor
 
+### Sprint 3 - RTS Controls & Formations 🚧
+- 🚧 [Sprint 3 Progress](sprints/SPRINT_3_PROGRESS.md) - Multi-unit control, formations, isometric rendering, drag-to-select
+
 ### Future Sprints
-- Sprint 3 - Playtesting & Iteration (upcoming)
+- Sprint 4 - Playtesting & Balance (upcoming)
 
 ## Quick Links
 - **Server Code**: `/server/main.go`
@@ -42,6 +45,7 @@
 │   └── sprints/
 │       ├── SPRINT_1_PLAN.md
 │       ├── SPRINT_1_COMPLETE.md
-│       └── SPRINT_2_COMPLETE.md
+│       ├── SPRINT_2_COMPLETE.md
+│       └── SPRINT_3_PROGRESS.md
 └── settings.local.json
 ```

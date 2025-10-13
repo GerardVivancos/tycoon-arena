@@ -155,10 +155,16 @@ Why this combination:
    - Network architecture refactored to Quake 3 model
    - See `.claude/docs/sprints/SPRINT_2_COMPLETE.md` for details
 
-   **Sprint 3 - Playtesting & Iteration (NEXT)**
-   - Tune tick rates, latencies, and gameplay
-   - Add minimal server logging and metrics
-   - Start thinking about theme and art
+   **Sprint 3 - RTS Controls & Formations (🚧 IN PROGRESS)**
+   - ✅ Multi-unit RTS system (5 workers per player)
+   - ✅ Formation movement (Box, Line, Spread)
+   - ✅ Drag-to-select box selection
+   - ✅ Isometric rendering with diamond grid
+   - ✅ Enhanced selection visuals (double-ring, bright yellow)
+   - ✅ Formation UI with hotkeys (1/2/3)
+   - 🚧 Gameplay tuning and balance
+   - 🚧 Win conditions
+   - See `.claude/docs/sprints/SPRINT_3_PROGRESS.md` for details
 
    **Documentation**
    - All sprint and planning documentation is in `.claude/docs/`
