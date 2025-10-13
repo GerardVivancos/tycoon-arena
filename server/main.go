@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/heap"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -136,6 +137,11 @@ type Entity struct {
 	MaxHealth       int32   `json:"maxHealth"`
 	FootprintWidth  int     `json:"footprintWidth,omitempty"`  // In tiles (0 for units)
 	FootprintHeight int     `json:"footprintHeight,omitempty"` // In tiles (0 for units)
+
+	// Pathfinding
+	Path        []TilePosition `json:"-"` // Full path to goal (not sent to client)
+	PathIndex   int            `json:"-"` // Current waypoint index
+	BlockedTime float32        `json:"-"` // Time spent blocked (for rerouting)
 }
 
 type Client struct {
@@ -629,28 +635,146 @@ func (s *GameServer) processCommand(cmd Command, client *Client) {
 }
 
 func (s *GameServer) updateEntityMovement(entity *Entity, deltaTime float32) {
-	// Check if entity is moving
-	if entity.TileX == entity.TargetTileX && entity.TileY == entity.TargetTileY {
+	// Check if entity has a path to follow
+	if len(entity.Path) == 0 {
 		entity.MoveProgress = 0.0
 		return
+	}
+
+	// Check if path is complete
+	if entity.PathIndex >= len(entity.Path) {
+		// Path complete, clear it
+		entity.Path = nil
+		entity.PathIndex = 0
+		entity.MoveProgress = 0.0
+		return
+	}
+
+	// Get next waypoint
+	waypoint := entity.Path[entity.PathIndex]
+	entity.TargetTileX = waypoint.X
+	entity.TargetTileY = waypoint.Y
+
+	// Dynamic collision avoidance: Check if next waypoint is currently occupied
+	// If so, pause movement this tick (unit waits for other unit to pass)
+	if entity.MoveProgress < 1.0 {
+		// Check if waypoint is occupied by another unit's current position
+		isBlocked := false
+		for _, other := range s.entities {
+			if other.Id == entity.Id {
+				continue
+			}
+			if other.Type != "worker" && other.Type != "player" {
+				continue
+			}
+			// Check if other unit is currently at this waypoint
+			if other.TileX == waypoint.X && other.TileY == waypoint.Y {
+				isBlocked = true
+				break
+			}
+		}
+
+		// If blocked, accumulate blocked time and consider rerouting
+		if isBlocked {
+			entity.BlockedTime += deltaTime
+
+			// If blocked for more than 1 second, recalculate path to find alternate route
+			const BlockedThreshold = 1.0 // seconds
+			if entity.BlockedTime > BlockedThreshold && len(entity.Path) > 0 {
+				// Get final destination
+				finalGoal := entity.Path[len(entity.Path)-1]
+
+				// Recalculate path from current position to goal
+				newPath := s.findPath(entity.TileX, entity.TileY, finalGoal.X, finalGoal.Y, entity.Id)
+
+				if newPath != nil && len(newPath) > 0 {
+					// Found alternate route
+					entity.Path = newPath
+					entity.PathIndex = 0
+					entity.MoveProgress = 0.0
+					entity.BlockedTime = 0.0
+					log.Printf("Unit %d rerouting around blockage", entity.Id)
+				} else {
+					// No alternate path found, reset blocked time and keep waiting
+					entity.BlockedTime = 0.0
+				}
+			}
+
+			return // Don't move this tick
+		}
+
+		// Not blocked, reset blocked time
+		entity.BlockedTime = 0.0
 	}
 
 	// Calculate movement progress increment
 	// MovementSpeed is tiles/second, so progress per tick = (tiles/sec) * deltaTime / 1 tile
 	progressIncrement := MovementSpeed * deltaTime
-
 	entity.MoveProgress += progressIncrement
 
-	// Check if reached target
+	// Check if reached waypoint
 	if entity.MoveProgress >= 1.0 {
-		entity.TileX = entity.TargetTileX
-		entity.TileY = entity.TargetTileY
+		// Move to waypoint
+		entity.TileX = waypoint.X
+		entity.TileY = waypoint.Y
 		entity.MoveProgress = 0.0
+
+		// Advance to next waypoint
+		entity.PathIndex++
+
+		// Check if path complete
+		if entity.PathIndex >= len(entity.Path) {
+			entity.Path = nil
+			entity.PathIndex = 0
+		}
 	}
 }
 
 type TilePosition struct {
 	X, Y int
+}
+
+// Pathfinding structures for A* algorithm
+type pathNode struct {
+	x, y   int
+	gCost  float32 // Cost from start
+	hCost  float32 // Heuristic to goal
+	fCost  float32 // gCost + hCost
+	parent *pathNode
+	index  int // Index in heap
+}
+
+// Priority queue for A* open set
+type nodeHeap []*pathNode
+
+func (h nodeHeap) Len() int { return len(h) }
+
+func (h nodeHeap) Less(i, j int) bool {
+	// Lower fCost has higher priority
+	return h[i].fCost < h[j].fCost
+}
+
+func (h nodeHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+
+func (h *nodeHeap) Push(x any) {
+	n := len(*h)
+	node := x.(*pathNode)
+	node.index = n
+	*h = append(*h, node)
+}
+
+func (h *nodeHeap) Pop() any {
+	old := *h
+	n := len(old)
+	node := old[n-1]
+	old[n-1] = nil
+	node.index = -1
+	*h = old[0 : n-1]
+	return node
 }
 
 // findNearestPassableTile searches in a spiral pattern for the nearest passable tile
@@ -686,6 +810,130 @@ func (s *GameServer) findNearestPassableTile(startX, startY, maxRadius int) Tile
 
 	// Fallback: return original position (unit will stack, but at least won't crash)
 	return TilePosition{X: startX, Y: startY}
+}
+
+// manhattanDistance calculates Manhattan distance heuristic for A*
+func (s *GameServer) manhattanDistance(x1, y1, x2, y2 int) float32 {
+	return float32(abs(x2-x1) + abs(y2-y1))
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// reconstructPath builds path from goal node back to start by following parent pointers
+func reconstructPath(node *pathNode) []TilePosition {
+	path := []TilePosition{}
+	for current := node; current != nil; current = current.parent {
+		path = append(path, TilePosition{X: current.x, Y: current.y})
+	}
+	// Reverse path so it goes from start to goal
+	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
+		path[i], path[j] = path[j], path[i]
+	}
+	return path
+}
+
+// findPath uses A* algorithm to find path from (startX, startY) to (goalX, goalY)
+// Returns path as slice of tile positions, or nil if no path exists
+func (s *GameServer) findPath(startX, startY, goalX, goalY int, unitId uint32) []TilePosition {
+	// Early exit: already at goal
+	if startX == goalX && startY == goalY {
+		return []TilePosition{{X: startX, Y: startY}}
+	}
+
+	// Early exit: goal not passable
+	if !s.isTileAvailableForUnit(goalX, goalY, unitId) {
+		return nil
+	}
+
+	// Initialize open and closed sets
+	openSet := &nodeHeap{}
+	heap.Init(openSet)
+	closedSet := make(map[int]bool) // Use single int key: y*width + x
+
+	// Start node
+	startNode := &pathNode{
+		x:     startX,
+		y:     startY,
+		gCost: 0,
+		hCost: s.manhattanDistance(startX, startY, goalX, goalY),
+	}
+	startNode.fCost = startNode.gCost + startNode.hCost
+	heap.Push(openSet, startNode)
+
+	// 4-directional movement
+	directions := [][2]int{{0, -1}, {1, 0}, {0, 1}, {-1, 0}} // N, E, S, W
+
+	// A* main loop
+	for openSet.Len() > 0 {
+		// Pop node with lowest fCost
+		current := heap.Pop(openSet).(*pathNode)
+
+		// Goal reached!
+		if current.x == goalX && current.y == goalY {
+			return reconstructPath(current)
+		}
+
+		// Add to closed set
+		closedKey := current.y*s.mapData.Width + current.x
+		closedSet[closedKey] = true
+
+		// Check all neighbors
+		for _, dir := range directions {
+			nx := current.x + dir[0]
+			ny := current.y + dir[1]
+
+			// Skip if out of bounds or impassable
+			if !s.isTileAvailableForUnit(nx, ny, unitId) {
+				continue
+			}
+
+			// Skip if already in closed set
+			neighborKey := ny*s.mapData.Width + nx
+			if closedSet[neighborKey] {
+				continue
+			}
+
+			// Calculate costs
+			tentativeGCost := current.gCost + 1.0 // Cost to move to adjacent tile
+
+			// Check if neighbor already in open set
+			var neighborNode *pathNode
+			for i := 0; i < openSet.Len(); i++ {
+				node := (*openSet)[i]
+				if node.x == nx && node.y == ny {
+					neighborNode = node
+					break
+				}
+			}
+
+			if neighborNode == nil {
+				// New node, add to open set
+				neighborNode = &pathNode{
+					x:      nx,
+					y:      ny,
+					gCost:  tentativeGCost,
+					hCost:  s.manhattanDistance(nx, ny, goalX, goalY),
+					parent: current,
+				}
+				neighborNode.fCost = neighborNode.gCost + neighborNode.hCost
+				heap.Push(openSet, neighborNode)
+			} else if tentativeGCost < neighborNode.gCost {
+				// Found better path to this node
+				neighborNode.gCost = tentativeGCost
+				neighborNode.fCost = neighborNode.gCost + neighborNode.hCost
+				neighborNode.parent = current
+				heap.Fix(openSet, neighborNode.index)
+			}
+		}
+	}
+
+	// No path found
+	return nil
 }
 
 // calculateFormation returns tile positions for units in the specified formation
@@ -731,12 +979,31 @@ func (s *GameServer) calculateBoxFormation(centerX, centerY, numUnits int) []Til
 
 	// If we couldn't find enough positions, find nearest passable tiles
 	// This prevents unit stacking when formations are partially blocked
+	spiralOffset := 0
 	for len(positions) < numUnits {
-		// Find nearest passable tile to center (search up to 10 tiles away)
-		fallbackPos := s.findNearestPassableTile(centerX, centerY, 10)
-		positions = append(positions, fallbackPos)
-		// Move center slightly to avoid finding same tile again
-		centerX++
+		// Try positions in a spiral around center
+		searchX := centerX + spiralOffset
+		searchY := centerY + spiralOffset
+		fallbackPos := s.findNearestPassableTile(searchX, searchY, 10)
+
+		// Check if this position is already in the list
+		isDuplicate := false
+		for _, pos := range positions {
+			if pos.X == fallbackPos.X && pos.Y == fallbackPos.Y {
+				isDuplicate = true
+				break
+			}
+		}
+
+		if !isDuplicate {
+			positions = append(positions, fallbackPos)
+		}
+
+		spiralOffset++
+		if spiralOffset > 20 {
+			// Give up and allow duplicates rather than infinite loop
+			positions = append(positions, fallbackPos)
+		}
 	}
 
 	return positions
@@ -762,12 +1029,31 @@ func (s *GameServer) calculateLineFormation(centerX, centerY, numUnits int) []Ti
 	}
 
 	// If we couldn't find enough positions, find nearest passable tiles
+	spiralOffset := 0
 	for len(positions) < numUnits {
-		// Find nearest passable tile to center (search up to 10 tiles away)
-		fallbackPos := s.findNearestPassableTile(centerX, centerY, 10)
-		positions = append(positions, fallbackPos)
-		// Move center slightly to avoid finding same tile again
-		centerY++
+		// Try positions around center
+		searchX := centerX
+		searchY := centerY + spiralOffset
+		fallbackPos := s.findNearestPassableTile(searchX, searchY, 10)
+
+		// Check if this position is already in the list
+		isDuplicate := false
+		for _, pos := range positions {
+			if pos.X == fallbackPos.X && pos.Y == fallbackPos.Y {
+				isDuplicate = true
+				break
+			}
+		}
+
+		if !isDuplicate {
+			positions = append(positions, fallbackPos)
+		}
+
+		spiralOffset++
+		if spiralOffset > 20 {
+			// Give up and allow duplicates rather than infinite loop
+			positions = append(positions, fallbackPos)
+		}
 	}
 
 	return positions
@@ -874,7 +1160,7 @@ func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 	// Calculate formation positions
 	formationPositions := s.calculateFormation(formation, tileX, tileY, len(validUnitIds))
 
-	// Assign each unit to its formation position
+	// Assign each unit to its formation position using pathfinding
 	for i, unitId := range validUnitIds {
 		entity := s.entities[unitId]
 
@@ -888,13 +1174,24 @@ func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 			targetY = tileY
 		}
 
-		// Set target
-		entity.TargetTileX = targetX
-		entity.TargetTileY = targetY
+		// Calculate path to formation position
+		path := s.findPath(entity.TileX, entity.TileY, targetX, targetY, entity.Id)
 
-		// If we're setting a new target while already moving, reset progress
-		if entity.TileX != targetX || entity.TileY != targetY {
+		if path != nil && len(path) > 0 {
+			// Store path and start following it
+			entity.Path = path
+			entity.PathIndex = 0
 			entity.MoveProgress = 0.0
+
+			// Set target to first waypoint (will be updated as path is followed)
+			if len(path) > 0 {
+				entity.TargetTileX = path[0].X
+				entity.TargetTileY = path[0].Y
+			}
+		} else {
+			// No path found, unit stays at current position
+			log.Printf("No path found for unit %d from (%d,%d) to (%d,%d)",
+				entity.Id, entity.TileX, entity.TileY, targetX, targetY)
 		}
 	}
 }
@@ -977,6 +1274,51 @@ func (s *GameServer) isTilePassable(tileX, tileY int) bool {
 
 	// 4. Check buildings (existing logic)
 	if s.isTileOccupiedByBuilding(tileX, tileY) {
+		return false
+	}
+
+	return true
+}
+
+// isTileOccupiedByUnit checks if another unit is at this tile or will stop there
+func (s *GameServer) isTileOccupiedByUnit(tileX, tileY int, excludeId uint32) bool {
+	for _, entity := range s.entities {
+		// Skip non-units (buildings)
+		if entity.Type != "worker" && entity.Type != "player" {
+			continue
+		}
+
+		// Skip the unit we're checking for
+		if entity.Id == excludeId {
+			continue
+		}
+
+		// Check current position (where unit is standing)
+		if entity.TileX == tileX && entity.TileY == tileY {
+			return true
+		}
+
+		// Check final destination (where unit will stop)
+		// Allow paths to cross, but prevent units from having same destination
+		if len(entity.Path) > 0 {
+			finalDest := entity.Path[len(entity.Path)-1]
+			if finalDest.X == tileX && finalDest.Y == tileY {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isTileAvailableForUnit checks if tile is passable and not occupied by other units
+func (s *GameServer) isTileAvailableForUnit(tileX, tileY int, unitId uint32) bool {
+	// Check terrain + buildings
+	if !s.isTilePassable(tileX, tileY) {
+		return false
+	}
+
+	// Check other units
+	if s.isTileOccupiedByUnit(tileX, tileY, unitId) {
 		return false
 	}
 
