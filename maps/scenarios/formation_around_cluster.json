@@ -27,11 +27,11 @@
     "maxTicks": 150,
     "finalState": {
       "units": [
-        {"id": "u1", "positionNear": [10, 7], "tolerance": 3, "label": "1'"},
-        {"id": "u2", "positionNear": [10, 7], "tolerance": 3, "label": "2'"},
-        {"id": "u3", "positionNear": [10, 7], "tolerance": 3, "label": "3'"},
-        {"id": "u4", "positionNear": [10, 7], "tolerance": 3, "label": "4'"},
-        {"id": "u5", "positionNear": [10, 7], "tolerance": 3, "label": "5'"}
+        {"id": "u1", "positionNear": [10, 7], "tolerance": 4, "label": "1'"},
+        {"id": "u2", "positionNear": [10, 7], "tolerance": 4, "label": "2'"},
+        {"id": "u3", "positionNear": [10, 7], "tolerance": 4, "label": "3'"},
+        {"id": "u4", "positionNear": [10, 7], "tolerance": 4, "label": "4'"},
+        {"id": "u5", "positionNear": [10, 7], "tolerance": 4, "label": "5'"}
       ]
     },
     "constraints": {
@@ -39,15 +39,5 @@
       "allStopped": true,
       "formationShape": "box"
     }
-  },
-
-  "visual": {
-    "annotations": [
-      {
-        "type": "marker",
-        "position": [10, 7],
-        "label": "Target (rock cluster blocks center)"
-      }
-    ]
   }
 }

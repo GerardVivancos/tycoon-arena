@@ -200,3 +200,23 @@ Why this combination:
 - ./launch-all.sh can be used to start the server and some clients
 - don't start the server and client, just make sure it builds and I will do the testing unless I tell you otherwise
 - one goal is to end up having a visual editor. Related to that, once the editor exists, it should be able to be used to create the test scenarios' json
+
+   ## Testing
+
+   The project includes a comprehensive test framework with 12 tests (10 unit + 2 scenario):
+   - **Unit tests**: Pathfinding, terrain passability, formations, collisions
+   - **Scenario tests**: Declarative JSON scenarios that run automatically
+
+   **Quick start:**
+   ```bash
+   cd server
+   go test -v                    # Run all 12 tests
+   go test -run TestAllScenarios # Run 2 scenario tests
+   ```
+
+   **Creating tests:**
+   - Write scenarios in JSON format (`maps/scenarios/*.json`)
+   - Tests run automatically with `go test`
+   - Explicit negative tests verify "can't go over rocks"
+
+   See [TESTING.md](TESTING.md) for complete guide.

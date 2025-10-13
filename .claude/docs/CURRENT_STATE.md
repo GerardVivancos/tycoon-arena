@@ -1,8 +1,8 @@
 # Current Project State - Quick Reference
 
 **Last Updated:** 2025-10-13
-**Sprint:** Pathfinding & Testing - ✅ Complete
-**Previous:** Map System (Phases 1-3) - ✅ Complete
+**Sprint:** Test Framework Phase 2 - ✅ Complete
+**Previous:** Pathfinding & Testing Phase 1 - ✅ Complete
 
 ---
 
@@ -22,11 +22,12 @@
 - ✅ 40×30 tile maps with terrain (grass, rocks, obstacles)
 - ✅ Camera zoom (0.5× to 2.0×) and pan (WASD/arrows/trackpad)
 - ✅ **Unit tests** - 5 passing tests for pathfinding and game logic
-- ✅ **Visual test framework** - JSON scenarios → SVG diagrams
+- ✅ **Scenario test framework** - JSON scenarios → SVG diagrams → automated execution
+- ✅ **Test runner** - 2 passing scenario tests integrated with `go test`
 
 **Current Map:** 40×30 tiles with 7 rock obstacles
-**Testing:** Declarative scenario framework with visual output
-**Next Feature:** Scenario runner, win conditions, or visual editor
+**Testing:** Full declarative test framework (Phase 1 & 2 complete)
+**Next Feature:** Win conditions, more unit types, or visual scenario editor
 
 ---
 
@@ -164,9 +165,11 @@ cd server && go run main.go
 - **Unit tests**: 5 tests covering pathfinding, formations, collisions
 - **Test maps**: 3 specialized maps (single rock, cluster, corridor)
 - **Declarative scenarios**: JSON-based test definitions
-- **Visual output**: Automatic SVG diagram generation
+- **Visual output**: Automatic SVG diagram generation (Phase 1)
 - **CLI tool**: `scenario-viz` generates visuals from JSON
-- **Example scenarios**: 2 working examples with SVG output
+- **Scenario runner**: Executes scenarios in isolated test server (Phase 2)
+- **Test integration**: Auto-discovers and runs all scenarios with `go test`
+- **Example scenarios**: 2 working examples (both passing)
 
 ---
 
@@ -177,9 +180,11 @@ realtime-game-engine/
 ├── server/
 │   ├── main.go              # Entire server (1400+ lines with pathfinding)
 │   ├── game_test.go         # Unit tests (5 tests)
+│   ├── scenario_test.go     # Scenario tests (2 tests) + adapter
 │   ├── testutil/
 │   │   ├── scenario.go           # Scenario schema + loader
 │   │   ├── scenario_renderer.go  # SVG generation
+│   │   ├── scenario_runner.go    # Scenario execution engine
 │   │   ├── test_server.go        # Test utilities
 │   │   └── assertions.go         # Test assertions
 │   ├── cmd/
@@ -312,19 +317,23 @@ realtime-game-engine/
 
 ## Recently Completed
 
-### Map System (Phases 1-3) ✅
-- ✅ 40×30 tile maps (expandable to 80×60 or larger)
-- ✅ Terrain rendering (grass, rocks)
-- ✅ Map file format (JSON)
-- ✅ Passability system (terrain + buildings)
-- ✅ Camera zoom and pan
-- ✅ Dynamic camera boundaries with zoom awareness
+### Test Framework Phase 2 ✅
+- ✅ Scenario runner executes JSON scenarios in isolated server
+- ✅ Test integration with `go test` (auto-discovery)
+- ✅ Comprehensive expectation verification
+- ✅ Constraint checking (paths, collisions, states)
+- ✅ All 7 tests passing (5 unit + 2 scenario)
 
-### Sprint 3 (RTS Controls) ✅
-- ✅ Multi-unit selection (5 workers per player)
-- ✅ Formation system (Box, Line, Spread)
-- ✅ Drag-to-select
-- ✅ Isometric rendering
+### Pathfinding & Testing Phase 1 ✅
+- ✅ A* pathfinding with collision avoidance
+- ✅ 5 unit tests for pathfinding/formations
+- ✅ Visual test framework (JSON → SVG)
+- ✅ CLI tool for generating scenario visuals
+
+### Map System (Phases 1-3) ✅
+- ✅ 40×30 tile maps with terrain rendering
+- ✅ Camera zoom and pan with dynamic boundaries
+- ✅ Server-side passability validation
 
 ## Next Steps
 

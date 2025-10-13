@@ -14,7 +14,6 @@ type TestScenario struct {
 	Setup        ScenarioSetup         `json:"setup"`
 	Actions      []ScenarioAction      `json:"actions"`
 	Expectations ScenarioExpectations  `json:"expectations"`
-	Visual       *ScenarioVisual       `json:"visual,omitempty"`
 }
 
 // ScenarioSetup defines initial state of the scenario
@@ -93,22 +92,6 @@ type Constraints struct {
 	PathExists     *bool    `json:"pathExists,omitempty"`     // Path should exist (true) or not (false)
 	AllStopped     bool     `json:"allStopped,omitempty"`     // All units should have stopped
 	FormationShape string   `json:"formationShape,omitempty"` // Expected formation type
-}
-
-// ScenarioVisual defines visual annotations for the diagram
-type ScenarioVisual struct {
-	Annotations []Annotation `json:"annotations"`
-}
-
-// Annotation defines a visual element to draw
-type Annotation struct {
-	Type     string  `json:"type"`     // "arrow", "marker", "circle", "text", "path"
-	From     *[2]int `json:"from,omitempty"`
-	To       *[2]int `json:"to,omitempty"`
-	Position *[2]int `json:"position,omitempty"`
-	Path     [][2]int `json:"path,omitempty"` // For multi-segment paths
-	Label    string  `json:"label,omitempty"`
-	Style    string  `json:"style,omitempty"` // "expected-path", "obstacle", "info"
 }
 
 // LoadScenario loads a test scenario from a JSON file

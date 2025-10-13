@@ -28,13 +28,18 @@
 ### Map System - Phases 1-3 ✅
 - ✅ [Map System Phases 1-3 Complete](sprints/MAP_SYSTEM_PHASES_1-3_COMPLETE.md) - File-based maps, camera controls, terrain rendering
 
+### Pathfinding & Testing ✅
+- ✅ [Pathfinding Implementation](PATHFINDING_IMPLEMENTATION.md) - A* pathfinding with collision avoidance
+- ✅ [Test Framework](TEST_FRAMEWORK.md) - Declarative JSON scenarios with SVG visualization (Phase 1 & 2 complete)
+
 ### Future Work
-- Sprint 4+ - Win conditions, more unit types, pathfinding (upcoming)
+- Sprint 4+ - Win conditions, more unit types, visual scenario editor (upcoming)
 
 ## Quick Links
 - **Server Code**: `/server/main.go`
 - **Client Code**: `/client/` (Godot project)
-- **Test Client**: `/test_client.go`
+- **Testing Guide**: [/TESTING.md](../../TESTING.md) - How to run and create tests
+- **Test Scenarios**: [/maps/scenarios/](../../maps/scenarios/) - JSON test definitions
 - **Launch Scripts**:
   - `/launch_client.sh` - Single client
   - `/launch_all.sh` - Server + multiple clients with color-coded logs
@@ -48,6 +53,8 @@
 │   ├── ARCHITECTURE.md
 │   ├── NETWORK_PROTOCOL.md
 │   ├── MAP_SYSTEM.md
+│   ├── PATHFINDING_IMPLEMENTATION.md
+│   ├── TEST_FRAMEWORK.md
 │   ├── planning/
 │   │   ├── GODOT_PLAN.md
 │   │   └── Theme Ideas.md
@@ -57,5 +64,11 @@
 │       ├── SPRINT_2_COMPLETE.md
 │       ├── SPRINT_3_PROGRESS.md
 │       └── MAP_SYSTEM_PHASES_1-3_COMPLETE.md
-└── settings.local.json
+├── settings.local.json
+└── (root)
+    ├── TESTING.md ⭐ User Testing Guide
+    └── maps/scenarios/
+        ├── README.md - Scenario directory guide
+        ├── *.json - Test scenario definitions
+        └── visuals/*.svg - Generated diagrams
 ```

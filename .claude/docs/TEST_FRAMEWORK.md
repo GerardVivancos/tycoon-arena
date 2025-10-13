@@ -1,8 +1,8 @@
 # Declarative Visual Test Framework
 
-**Status:** ✅ Phase 1 Complete (Schema, Renderer, CLI)
+**Status:** ✅ Phase 1 & 2 Complete (Full Framework Operational)
 **Date:** 2025-10-13
-**Goal:** JSON-based test scenarios with automatic SVG visualization
+**Goal:** JSON-based test scenarios with automatic SVG visualization and execution
 
 ---
 
@@ -32,10 +32,16 @@ JSON Scenario → Schema Loader → SVG Renderer → Visual Diagram
 ✅ **CLI Tool** - Command-line tool to generate SVGs
 ✅ **Example Scenarios** - 2 working examples
 
-### Pending (Phase 2)
-⏳ **Scenario Runner** - Execute scenarios in test environment
-⏳ **Test Integration** - Integrate with `go test`
-⏳ **Result Comparison** - Compare expected vs actual outcomes
+### Implemented (Phase 2)
+✅ **Scenario Runner** - Execute scenarios in isolated game server
+✅ **Test Integration** - Fully integrated with `go test`
+✅ **Result Comparison** - Comprehensive expectation verification
+✅ **Constraint Checking** - Path validation, collision detection, state verification
+
+### Future (Phase 3)
+⏳ **Visual Editor** - GUI tool to create scenarios visually
+⏳ **Diff View** - Visual comparison of expected vs actual
+⏳ **Animated Playback** - Step-through visualization of test execution
 
 ---
 
@@ -363,54 +369,67 @@ go test -v -run TestScenario/my_test
 
 ---
 
-## Future: Scenario Runner (Phase 2)
+## Phase 2: Scenario Runner (✅ Complete)
 
-### Planned Implementation
+### Implementation
 
-**Function:** `RunScenario(scenario) → ScenarioResult`
+**File:** `server/testutil/scenario_runner.go` (~400 lines)
+
+**Function:** `RunScenario(scenario, gameServer) → ScenarioResult`
 
 **Process:**
-1. Load map file
-2. Create GameServer instance
-3. Add units/buildings from setup
-4. Execute actions at specified ticks
-5. Run simulation for maxTicks
-6. Check all expectations and constraints
-7. Return pass/fail + violations list
+1. ✅ Load map file
+2. ✅ Create isolated GameServer instance via adapter
+3. ✅ Add units/buildings from setup
+4. ✅ Execute actions at specified ticks
+5. ✅ Run simulation for maxTicks
+6. ✅ Track unit paths for constraint checking
+7. ✅ Verify all expectations and constraints
+8. ✅ Return detailed pass/fail with violations
 
 **Result Type:**
 ```go
 type ScenarioResult struct {
     Passed        bool
     Violations    []string
-    FinalState    ActualState
-    ExecutionTime time.Duration
+    FinalState    *ActualState
+    ExecutionTime int // in ticks
 }
 ```
 
 ### Test Integration
 
+**File:** `server/scenario_test.go` (~260 lines)
+
 **Function:** `TestAllScenarios(t *testing.T)`
+- Auto-discovers all `*.json` files in `maps/scenarios/`
+- Runs each scenario as a Go subtest
+- Reports violations clearly with full context
+- All scenarios passing ✅
 
-```go
-func TestAllScenarios(t *testing.T) {
-    scenarioFiles, _ := filepath.Glob("../maps/scenarios/*.json")
-
-    for _, file := range scenarioFiles {
-        t.Run(filepath.Base(file), func(t *testing.T) {
-            scenario, _ := LoadScenario(file)
-            result, _ := RunScenario(scenario)
-
-            if !result.Passed {
-                t.Errorf("Violations:\n%s",
-                    strings.Join(result.Violations, "\n"))
-            }
-        })
-    }
-}
-```
+**Adapter:** `TestGameServerAdapter`
+- Implements `GameServerInterface` for testing
+- Provides isolated game server for each test
+- Simulates tick-by-tick execution
+- No network dependencies
 
 **Run:** `go test -v -run TestAllScenarios`
+
+**Output:**
+```
+=== RUN   TestAllScenarios
+    Found 2 scenario file(s)
+=== RUN   TestAllScenarios/formation_around_cluster
+    Running scenario: Formation Around Rock Cluster
+    Scenario completed in 150 ticks
+=== RUN   TestAllScenarios/navigate_around_rock
+    Running scenario: Navigate Around Single Rock
+    Scenario completed in 100 ticks
+--- PASS: TestAllScenarios (0.00s)
+    --- PASS: TestAllScenarios/formation_around_cluster (0.00s)
+    --- PASS: TestAllScenarios/navigate_around_rock (0.00s)
+PASS
+```
 
 ---
 
@@ -469,25 +488,26 @@ A GUI tool to create scenarios visually:
 
 ## Current Status
 
-### Completed
+### Phase 1 - Complete ✅
 - ✅ JSON schema definition
 - ✅ Scenario loader with validation
 - ✅ SVG renderer with visual output
 - ✅ CLI tool for generating diagrams
-- ✅ 2 example scenarios
-- ✅ All code documented and tested
+- ✅ 2 example scenarios with SVG visuals
 
-### Remaining (Phase 2)
-- ⏳ Scenario runner (execute scenarios)
-- ⏳ Expectation verification
-- ⏳ Test integration with `go test`
-- ⏳ More example scenarios
+### Phase 2 - Complete ✅
+- ✅ Scenario runner (execute scenarios in isolated server)
+- ✅ Expectation verification (positions, states, constraints)
+- ✅ Test integration with `go test` (auto-discovery)
+- ✅ Comprehensive constraint checking
+- ✅ All 7 tests passing (5 unit + 2 scenario)
 
 ### Future (Phase 3+)
 - 🔮 Visual editor for creating scenarios
-- 🔮 Diff view (expected vs actual)
+- 🔮 Diff view (expected vs actual with SVG overlay)
 - 🔮 Interactive playback of test execution
 - 🔮 Animated SVG output (show movement over time)
+- 🔮 More scenario examples (combat, building, resources)
 
 ---
 

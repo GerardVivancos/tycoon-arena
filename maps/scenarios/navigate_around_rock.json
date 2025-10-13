@@ -42,17 +42,5 @@
       "noStacking": true,
       "pathExists": true
     }
-  },
-
-  "visual": {
-    "annotations": [
-      {
-        "type": "arrow",
-        "from": [5, 5],
-        "to": [15, 5],
-        "style": "expected-path",
-        "label": "Expected path (around rock)"
-      }
-    ]
   }
 }
