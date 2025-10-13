@@ -1,7 +1,7 @@
 # Network Protocol Specification
 
-**Version:** 1.0
-**Date:** 2025-10-05
+**Version:** 2.0
+**Date:** 2025-10-13
 **Based on:** Quake 3 Network Model
 
 ## Overview
@@ -84,7 +84,10 @@ Client                          Server
     "clientId": 1,
     "tickRate": 20,
     "heartbeatInterval": 2000,
-    "inputRedundancy": 3
+    "inputRedundancy": 3,
+    "tileSize": 32,
+    "arenaTilesWidth": 25,
+    "arenaTilesHeight": 18
   }
 }
 ```
@@ -94,6 +97,9 @@ Client                          Server
 - `tickRate` - server simulation rate (Hz)
 - `heartbeatInterval` - milliseconds between ping messages
 - `inputRedundancy` - how many commands to send per input message (N)
+- `tileSize` - pixels per tile (Sprint 3+)
+- `arenaTilesWidth` - map width in tiles (Sprint 3+)
+- `arenaTilesHeight` - map height in tiles (Sprint 3+)
 
 ### 3. Input (Client → Server)
 
@@ -144,9 +150,41 @@ Client                          Server
 - `commands[]` - array of actions for this frame
 
 **Command Types:**
-- `move` - `{deltaX: float, deltaY: float}` - movement delta
-- `build` - `{buildingType: string, x: float, y: float}` - place building
-- `attack` - `{targetId: uint32}` - damage target entity
+
+**Move** - Tile-based movement with formation
+```json
+{
+  "type": "move",
+  "data": {
+    "unitIds": [10, 11, 12],
+    "targetTileX": 15,
+    "targetTileY": 8,
+    "formation": "box"  // "box", "line", or "spread"
+  }
+}
+```
+
+**Build** - Place building at tile
+```json
+{
+  "type": "build",
+  "data": {
+    "buildingType": "generator",
+    "tileX": 10,
+    "tileY": 12
+  }
+}
+```
+
+**Attack** - Damage target entity
+```json
+{
+  "type": "attack",
+  "data": {
+    "targetId": 5
+  }
+}
+```
 
 ### 4. Snapshot (Server → Client)
 
@@ -160,11 +198,14 @@ Client                          Server
     "baselineTick": 0,
     "entities": [
       {
-        "id": 1,
+        "id": 10,
         "ownerId": 1,
-        "type": "player",
-        "x": 250.5,
-        "y": 300.0,
+        "type": "worker",
+        "tileX": 12,
+        "tileY": 7,
+        "targetTileX": 15,
+        "targetTileY": 8,
+        "moveProgress": 0.65,
         "health": 100,
         "maxHealth": 100
       },
@@ -172,12 +213,15 @@ Client                          Server
         "id": 3,
         "ownerId": 1,
         "type": "generator",
-        "x": 200.0,
-        "y": 150.0,
+        "tileX": 10,
+        "tileY": 12,
+        "targetTileX": 10,
+        "targetTileY": 12,
+        "moveProgress": 0.0,
         "health": 100,
         "maxHealth": 100,
-        "width": 40.0,
-        "height": 40.0
+        "footprintWidth": 2,
+        "footprintHeight": 2
       }
     ],
     "players": {
@@ -187,6 +231,12 @@ Client                          Server
   }
 }
 ```
+
+**Entity Fields:**
+- `tileX`, `tileY` - current tile position
+- `targetTileX`, `targetTileY` - destination tile
+- `moveProgress` - 0.0 to 1.0 (interpolation between current and target)
+- `footprintWidth`, `footprintHeight` - multi-tile size (buildings only)
 
 **Fields:**
 - `tick` - server tick number for this snapshot

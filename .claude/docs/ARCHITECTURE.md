@@ -1,5 +1,10 @@
 # System Architecture & Implementation Guide
 
+> **📍 For current implementation details, see [CURRENT_STATE.md](CURRENT_STATE.md)**
+>
+> This document covers core networking architecture (Quake 3 model, tick system, concurrency).
+> Game mechanics have evolved - see CURRENT_STATE.md and SPRINT_3_PROGRESS.md for latest features.
+
 ## Table of Contents
 1. [System Overview](#system-overview)
 2. [Server Architecture](#server-architecture)

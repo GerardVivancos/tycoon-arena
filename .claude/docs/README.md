@@ -2,8 +2,10 @@
 
 ## Project Overview
 - 📘 [Main Project Instructions](../../CLAUDE.md) - Core design notes, tech stack, and project guidelines
+- ⚡ [**CURRENT STATE**](CURRENT_STATE.md) - **START HERE**: Quick reference for current features and systems
 - 🏗️ [System Architecture](ARCHITECTURE.md) - Technical implementation guide and handoff documentation
 - 🌐 [Network Protocol](NETWORK_PROTOCOL.md) - Formal protocol specification (Quake 3 model)
+- 🗺️ [Map System Design](MAP_SYSTEM.md) - Terrain, camera, and occlusion system (in progress)
 
 ## Planning Documents
 - 📋 [Godot Implementation Plan](planning/GODOT_PLAN.md) - Initial planning for Godot client architecture
@@ -37,8 +39,10 @@
 .claude/
 ├── docs/
 │   ├── README.md (this file)
+│   ├── CURRENT_STATE.md ⭐ START HERE
 │   ├── ARCHITECTURE.md
 │   ├── NETWORK_PROTOCOL.md
+│   ├── MAP_SYSTEM.md
 │   ├── planning/
 │   │   ├── GODOT_PLAN.md
 │   │   └── Theme Ideas.md
