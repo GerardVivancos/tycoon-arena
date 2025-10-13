@@ -2,6 +2,7 @@ extends Node2D
 
 @onready var network_manager = $NetworkManager
 @onready var entities_container = $Entities
+@onready var camera = $Camera2D
 @onready var connection_label = $UI/ConnectionStatus
 @onready var fps_label = $UI/FPS
 @onready var player_list_label = $UI/PlayerList
@@ -24,8 +25,8 @@ var arena_tiles_height: int
 const PIXELS_PER_TILE = 32  # Visual size of each tile (for top-down, kept for reference)
 const ISO_TILE_WIDTH = 64   # Width of isometric diamond
 const ISO_TILE_HEIGHT = 32  # Height of isometric diamond
-const ISO_OFFSET_X = 400    # Screen offset to center the map
-const ISO_OFFSET_Y = 100
+const ISO_OFFSET_X = 640    # Screen offset to center the map (adjusted for larger maps)
+const ISO_OFFSET_Y = 200    # Adjusted for 40×30 map
 
 var player_scene = preload("res://Player.tscn")
 var entities: Dictionary = {}  # entity_id -> unit/building node
@@ -46,6 +47,13 @@ const DRAG_THRESHOLD: float = 5.0  # Minimum pixels to count as drag vs click
 # Formation system
 var current_formation: String = "box"  # Options: "box", "line", "spread"
 
+# Camera system
+var camera_zoom_min: float = 0.5
+var camera_zoom_max: float = 2.0
+var camera_zoom_step: float = 0.1
+var camera_pan_speed: float = 500.0  # pixels per second
+var camera_bounds: Rect2  # Set after map loads
+
 func _ready():
 	# Connect network signals
 	network_manager.connected_to_server.connect(_on_connected_to_server)
@@ -64,6 +72,9 @@ func _ready():
 	line_formation_button.text = "Line (2)"
 	spread_formation_button.text = "Spread (3)"
 
+	# Initialize camera
+	camera.zoom = Vector2(1.0, 1.0)
+
 	# Auto-connect on start
 	network_manager.connect_to_server("Player" + str(randi() % 1000))
 
@@ -74,6 +85,35 @@ func _on_connected_to_server(client_id: int, tick_rate: int, tile_sz: int, tiles
 	arena_tiles_height = tiles_h
 	connection_label.text = "Connected (ID: %d)" % client_id
 	print("Connected with client ID: %d, Arena: %dx%d tiles" % [client_id, tiles_w, tiles_h])
+
+	# Calculate camera bounds based on map size in isometric space
+	# Isometric maps form a diamond, so we need all 4 corners
+	var north = tile_to_iso(0, 0)                     # Top corner
+	var east = tile_to_iso(float(tiles_w), 0)        # Right corner
+	var south = tile_to_iso(float(tiles_w), float(tiles_h))  # Bottom corner
+	var west = tile_to_iso(0, float(tiles_h))        # Left corner
+
+	# Find actual bounding box of the diamond
+	var min_x = min(north.x, min(east.x, min(south.x, west.x)))
+	var max_x = max(north.x, max(east.x, max(south.x, west.x)))
+	var min_y = min(north.y, min(east.y, min(south.y, west.y)))
+	var max_y = max(north.y, max(east.y, max(south.y, west.y)))
+
+	# Get actual viewport size (handles resizable window)
+	var viewport_size = get_viewport().get_visible_rect().size
+	var viewport_width = viewport_size.x
+	var viewport_height = viewport_size.y
+	var half_viewport_w = viewport_width / 2.0
+	var half_viewport_h = viewport_height / 2.0
+
+	# Camera bounds: camera center can move so edges of map align with viewport edges
+	camera_bounds = Rect2(
+		min_x + half_viewport_w,
+		min_y + half_viewport_h,
+		(max_x - min_x) - viewport_width,
+		(max_y - min_y) - viewport_height
+	)
+
 	queue_redraw()  # Trigger grid drawing
 
 # Convert tile coordinates to isometric screen position
@@ -100,6 +140,44 @@ func iso_to_tile(screen_pos: Vector2) -> Vector2i:
 
 	# Use floor instead of round - tile (x,y) owns all points where x <= tile_x < x+1
 	return Vector2i(int(floor(tile_x)), int(floor(tile_y)))
+
+# Camera control functions
+func zoom_camera(delta_zoom: float):
+	var new_zoom = camera.zoom.x + delta_zoom
+	new_zoom = clamp(new_zoom, camera_zoom_min, camera_zoom_max)
+	camera.zoom = Vector2(new_zoom, new_zoom)
+
+	# After zoom, re-clamp camera position to adjusted bounds
+	pan_camera(Vector2.ZERO)
+
+func pan_camera(offset: Vector2):
+	camera.position += offset / camera.zoom.x  # Adjust for zoom level
+
+	# Clamp to map bounds (if bounds are set), accounting for current zoom level
+	if camera_bounds.has_area():
+		# Get actual viewport size (handles resizable window)
+		var viewport_size = get_viewport().get_visible_rect().size
+		var viewport_width = viewport_size.x
+		var viewport_height = viewport_size.y
+
+		# Effective viewport size in world coordinates changes with zoom
+		var effective_half_w = (viewport_width / 2.0) / camera.zoom.x
+		var effective_half_h = (viewport_height / 2.0) / camera.zoom.x
+
+		# Allow 20% padding from viewport edges (keep map edge at least 20% from window edge)
+		var edge_padding_x = viewport_width * 0.20  # 20% of viewport width
+		var edge_padding_y = viewport_height * 0.20  # 20% of viewport height
+
+		# Recalculate bounds for current zoom
+		var half_w = viewport_width / 2.0
+		var half_h = viewport_height / 2.0
+		var min_x = camera_bounds.position.x - (half_w - effective_half_w) - edge_padding_x
+		var max_x = camera_bounds.end.x + (half_w - effective_half_w) + edge_padding_x
+		var min_y = camera_bounds.position.y - (half_h - effective_half_h) - edge_padding_y
+		var max_y = camera_bounds.end.y + (half_h - effective_half_h) + edge_padding_y
+
+		camera.position.x = clamp(camera.position.x, min_x, max_x)
+		camera.position.y = clamp(camera.position.y, min_y, max_y)
 
 func _on_snapshot_received(snapshot: Dictionary):
 	var entities_data = snapshot.get("entities", [])
@@ -205,7 +283,33 @@ func _process(delta):
 	# Update FPS
 	fps_label.text = "FPS: %d" % Engine.get_frames_per_second()
 
+	# WASD/Arrow key camera panning
+	var pan_direction = Vector2.ZERO
+
+	if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
+		pan_direction.y -= 1
+	if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
+		pan_direction.y += 1
+	if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+		pan_direction.x -= 1
+	if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+		pan_direction.x += 1
+
+	if pan_direction != Vector2.ZERO:
+		pan_camera(pan_direction.normalized() * camera_pan_speed * delta)
+
 func _input(event):
+	# Handle scroll/zoom in _input (before _unhandled_input)
+	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			zoom_camera(camera_zoom_step)
+			get_viewport().set_input_as_handled()
+			return
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			zoom_camera(-camera_zoom_step)
+			get_viewport().set_input_as_handled()
+			return
+
 	# Handle attack with Q key
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_Q:
 		_on_attack_button_pressed()
@@ -251,6 +355,22 @@ func _draw():
 		draw_rect(rect, Color(0, 1, 0, 0.8), false, 2.0)
 
 func _unhandled_input(event):
+	# Mouse wheel / trackpad zoom (works even when not connected)
+	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			zoom_camera(camera_zoom_step)
+			get_viewport().set_input_as_handled()
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			zoom_camera(-camera_zoom_step)
+			get_viewport().set_input_as_handled()
+
+	# Trackpad pinch/magnify gesture for zoom
+	elif event is InputEventMagnifyGesture:
+		# factor > 1.0 means zoom in (pinch out), < 1.0 means zoom out (pinch in)
+		var zoom_change = (event.factor - 1.0) * 0.5  # Scale the gesture
+		zoom_camera(zoom_change)
+		get_viewport().set_input_as_handled()
+
 	if not network_manager.is_connected or tile_size == 0:
 		return
 

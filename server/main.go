@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"net"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -135,6 +136,72 @@ type Client struct {
 	LastAckTick         uint64 // For delta compression (not implemented)
 }
 
+// Map system types
+type TileCoord struct {
+	X int
+	Y int
+}
+
+type TerrainType struct {
+	Type     string  `json:"type"`
+	Passable bool    `json:"passable"`
+	Height   float32 `json:"height"`
+	Visual   string  `json:"visual"`
+}
+
+type Feature struct {
+	Type         string  `json:"type"`
+	X            int     `json:"x"`
+	Y            int     `json:"y"`
+	Width        int     `json:"width"`
+	Height       int     `json:"height"`
+	Passable     bool    `json:"passable"`
+	VisualHeight float32 `json:"visualHeight"`
+}
+
+type SpawnPoint struct {
+	Team   int `json:"team"`
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Radius int `json:"radius"`
+}
+
+type MapData struct {
+	Width          int
+	Height         int
+	TileSize       int
+	DefaultTerrain TerrainType
+	Tiles          map[TileCoord]TerrainType // Sparse map for non-default tiles
+	Features       []Feature
+	SpawnPoints    []SpawnPoint
+}
+
+// JSON format for map files (matches our JSON structure)
+type MapFileFormat struct {
+	Version  string `json:"version"`
+	Name     string `json:"name"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	TileSize int    `json:"tileSize"`
+	Terrain  struct {
+		Default TerrainType `json:"default"`
+		Tiles   []struct {
+			X        int     `json:"x"`
+			Y        int     `json:"y"`
+			Type     string  `json:"type"`
+			Passable bool    `json:"passable"`
+			Height   float32 `json:"height"`
+		} `json:"tiles"`
+	} `json:"terrain"`
+	Features    []Feature    `json:"features"`
+	SpawnPoints []SpawnPoint `json:"spawnPoints"`
+	Metadata    struct {
+		Author      string `json:"author"`
+		Created     string `json:"created"`
+		Description string `json:"description"`
+	} `json:"metadata"`
+}
+
 type QueuedInput struct {
 	ClientId uint32
 	Sequence uint32
@@ -151,6 +218,7 @@ type GameServer struct {
 	mu         sync.RWMutex
 	inputQueue []QueuedInput
 	queueMu    sync.Mutex
+	mapData    *MapData // Map configuration
 }
 
 func NewGameServer() *GameServer {
@@ -161,6 +229,53 @@ func NewGameServer() *GameServer {
 		nextId:     1,
 		inputQueue: make([]QueuedInput, 0),
 	}
+}
+
+// LoadMap loads a map from a JSON file and returns MapData
+func LoadMap(filepath string) (*MapData, error) {
+	// Read the file
+	data, err := os.ReadFile(filepath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read map file: %w", err)
+	}
+
+	// Parse JSON
+	var mapFile MapFileFormat
+	if err := json.Unmarshal(data, &mapFile); err != nil {
+		return nil, fmt.Errorf("failed to parse map JSON: %w", err)
+	}
+
+	// Validate dimensions
+	if mapFile.Width <= 0 || mapFile.Height <= 0 {
+		return nil, fmt.Errorf("invalid map dimensions: %dx%d", mapFile.Width, mapFile.Height)
+	}
+
+	// Build MapData
+	mapData := &MapData{
+		Width:          mapFile.Width,
+		Height:         mapFile.Height,
+		TileSize:       mapFile.TileSize,
+		DefaultTerrain: mapFile.Terrain.Default,
+		Tiles:          make(map[TileCoord]TerrainType),
+		Features:       mapFile.Features,
+		SpawnPoints:    mapFile.SpawnPoints,
+	}
+
+	// Build sparse tile map (only store non-default tiles)
+	for _, tile := range mapFile.Terrain.Tiles {
+		coord := TileCoord{X: tile.X, Y: tile.Y}
+		mapData.Tiles[coord] = TerrainType{
+			Type:     tile.Type,
+			Passable: tile.Passable,
+			Height:   tile.Height,
+			Visual:   tile.Type, // Use type as visual if not specified
+		}
+	}
+
+	log.Printf("Loaded map '%s': %dx%d tiles, %d terrain tiles, %d features, %d spawn points",
+		mapFile.Name, mapData.Width, mapData.Height, len(mapData.Tiles), len(mapData.Features), len(mapData.SpawnPoints))
+
+	return mapData, nil
 }
 
 func (s *GameServer) Start() error {
@@ -347,22 +462,33 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 	s.nextId++
 
 	// Spawn starting units for this player (5 workers)
-	spawnBaseTileX := 3 + len(s.clients)*5
-	spawnBaseTileY := ArenaTilesHeight / 2
+	// Assign team based on client number (team 0 for first client, team 1 for second, etc.)
+	teamId := len(s.clients)
+	spawnBaseTileX, spawnBaseTileY := s.getSpawnPosition(teamId)
 
 	ownedUnits := make([]uint32, 0, 5)
 	for i := 0; i < 5; i++ {
 		entityId := s.nextId
 		s.nextId++
 
+		// Spawn workers in horizontal line
+		workerX := spawnBaseTileX + i
+		workerY := spawnBaseTileY
+
+		// Ensure spawn position is passable (fallback to base position if not)
+		if !s.isTilePassable(workerX, workerY) {
+			workerX = spawnBaseTileX
+			workerY = spawnBaseTileY
+		}
+
 		worker := &Entity{
 			Id:           entityId,
 			OwnerId:      clientId,
 			Type:         "worker",
-			TileX:        spawnBaseTileX + i,
-			TileY:        spawnBaseTileY,
-			TargetTileX:  spawnBaseTileX + i,
-			TargetTileY:  spawnBaseTileY,
+			TileX:        workerX,
+			TileY:        workerY,
+			TargetTileX:  workerX,
+			TargetTileY:  workerY,
 			MoveProgress: 0.0,
 			Health:       100,
 			MaxHealth:    100,
@@ -392,8 +518,8 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 		HeartbeatInterval: int(HeartbeatInterval.Milliseconds()),
 		InputRedundancy:   3, // Client should send last 3 commands
 		TileSize:          TileSize,
-		ArenaTilesWidth:   ArenaTilesWidth,
-		ArenaTilesHeight:  ArenaTilesHeight,
+		ArenaTilesWidth:   s.mapData.Width,
+		ArenaTilesHeight:  s.mapData.Height,
 	}
 
 	s.sendMessage(Message{
@@ -533,7 +659,7 @@ func (s *GameServer) calculateBoxFormation(centerX, centerY, numUnits int) []Til
 		tileY := startY + row
 
 		// Validate bounds
-		if tileX < 0 || tileX >= ArenaTilesWidth || tileY < 0 || tileY >= ArenaTilesHeight {
+		if tileX < 0 || tileX >= s.mapData.Width || tileY < 0 || tileY >= s.mapData.Height {
 			continue
 		}
 
@@ -565,7 +691,7 @@ func (s *GameServer) calculateLineFormation(centerX, centerY, numUnits int) []Ti
 		tileY := centerY
 
 		// Validate bounds
-		if tileX < 0 || tileX >= ArenaTilesWidth || tileY < 0 || tileY >= ArenaTilesHeight {
+		if tileX < 0 || tileX >= s.mapData.Width || tileY < 0 || tileY >= s.mapData.Height {
 			continue
 		}
 
@@ -606,7 +732,7 @@ func (s *GameServer) calculateSpiralFormation(centerX, centerY, numUnits int) []
 				y += dir.Y
 
 				// Validate bounds
-				if x >= 0 && x < ArenaTilesWidth && y >= 0 && y < ArenaTilesHeight {
+				if x >= 0 && x < s.mapData.Width && y >= 0 && y < s.mapData.Height {
 					// Skip if occupied by building
 					if !s.isTileOccupiedByBuilding(x, y) {
 						positions = append(positions, TilePosition{X: x, Y: y})
@@ -646,7 +772,7 @@ func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 	tileY := int(targetTileY)
 
 	// Validate bounds
-	if tileX < 0 || tileX >= ArenaTilesWidth || tileY < 0 || tileY >= ArenaTilesHeight {
+	if tileX < 0 || tileX >= s.mapData.Width || tileY < 0 || tileY >= s.mapData.Height {
 		return
 	}
 
@@ -727,6 +853,77 @@ func (s *GameServer) isTileOccupiedByBuilding(tileX, tileY int) bool {
 	return false
 }
 
+// getSpawnPosition returns a spawn position for a given team
+// It attempts to find a passable tile near the team's spawn point
+func (s *GameServer) getSpawnPosition(teamId int) (int, int) {
+	// Find spawn point for this team
+	for _, spawn := range s.mapData.SpawnPoints {
+		if spawn.Team == teamId {
+			// Try to find a passable tile near the spawn point
+			for attempt := 0; attempt < 100; attempt++ {
+				offsetX := 0
+				offsetY := 0
+				if spawn.Radius > 0 {
+					// Random offset within radius (simplified - not true circle)
+					offsetX = (attempt % (spawn.Radius * 2 + 1)) - spawn.Radius
+					offsetY = (attempt / (spawn.Radius * 2 + 1)) - spawn.Radius
+				}
+
+				x := spawn.X + offsetX
+				y := spawn.Y + offsetY
+
+				if s.isTilePassable(x, y) {
+					return x, y
+				}
+			}
+		}
+	}
+
+	// Fallback: use team-based default positions
+	if teamId == 0 {
+		return 5, s.mapData.Height / 2
+	} else {
+		return s.mapData.Width - 10, s.mapData.Height / 2
+	}
+}
+
+// isTilePassable checks if a tile can be moved through or built on
+func (s *GameServer) isTilePassable(tileX, tileY int) bool {
+	// 1. Check bounds
+	if tileX < 0 || tileX >= s.mapData.Width || tileY < 0 || tileY >= s.mapData.Height {
+		return false
+	}
+
+	// 2. Check terrain (sparse map - if tile exists and is not passable)
+	coord := TileCoord{X: tileX, Y: tileY}
+	if terrain, exists := s.mapData.Tiles[coord]; exists {
+		if !terrain.Passable {
+			return false
+		}
+	}
+	// If tile doesn't exist in sparse map, use default terrain passability
+	if !s.mapData.DefaultTerrain.Passable {
+		return false
+	}
+
+	// 3. Check multi-tile features
+	for _, feature := range s.mapData.Features {
+		if tileX >= feature.X && tileX < feature.X+feature.Width &&
+			tileY >= feature.Y && tileY < feature.Y+feature.Height {
+			if !feature.Passable {
+				return false
+			}
+		}
+	}
+
+	// 4. Check buildings (existing logic)
+	if s.isTileOccupiedByBuilding(tileX, tileY) {
+		return false
+	}
+
+	return true
+}
+
 func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 	buildData, ok := cmd.Data.(map[string]interface{})
 	if !ok {
@@ -755,8 +952,8 @@ func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 	}
 
 	// Check bounds
-	if tileX < 0 || tileX+footprintWidth > ArenaTilesWidth ||
-		tileY < 0 || tileY+footprintHeight > ArenaTilesHeight {
+	if tileX < 0 || tileX+footprintWidth > s.mapData.Width ||
+		tileY < 0 || tileY+footprintHeight > s.mapData.Height {
 		return
 	}
 
@@ -871,7 +1068,17 @@ func (s *GameServer) marshalData(data interface{}) json.RawMessage {
 }
 
 func main() {
+	// Load map (relative to server directory)
+	mapData, err := LoadMap("../maps/default.json")
+	if err != nil {
+		log.Fatalf("Failed to load map: %v", err)
+	}
+
+	// Create server and assign map
 	server := NewGameServer()
+	server.mapData = mapData
+
+	// Start server
 	if err := server.Start(); err != nil {
 		log.Fatal(err)
 	}

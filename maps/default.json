@@ -1,0 +1,38 @@
+{
+  "version": "1.0",
+  "name": "Default Arena",
+  "width": 40,
+  "height": 30,
+  "tileSize": 32,
+
+  "terrain": {
+    "default": {
+      "type": "grass",
+      "passable": true,
+      "height": 0,
+      "visual": "grass"
+    },
+    "tiles": [
+      {"x": 15, "y": 10, "type": "rock", "passable": false, "height": 2},
+      {"x": 16, "y": 10, "type": "rock", "passable": false, "height": 2},
+      {"x": 25, "y": 15, "type": "rock", "passable": false, "height": 2},
+      {"x": 26, "y": 15, "type": "rock", "passable": false, "height": 2},
+      {"x": 20, "y": 20, "type": "rock", "passable": false, "height": 2},
+      {"x": 10, "y": 18, "type": "rock", "passable": false, "height": 2},
+      {"x": 30, "y": 12, "type": "rock", "passable": false, "height": 2}
+    ]
+  },
+
+  "features": [],
+
+  "spawnPoints": [
+    {"team": 0, "x": 5, "y": 15, "radius": 3},
+    {"team": 1, "x": 34, "y": 15, "radius": 3}
+  ],
+
+  "metadata": {
+    "author": "System",
+    "created": "2025-10-13",
+    "description": "Default 40x30 arena with scattered obstacles"
+  }
+}
