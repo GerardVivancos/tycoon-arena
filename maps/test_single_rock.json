@@ -1,0 +1,32 @@
+{
+  "version": "1.0",
+  "name": "Test - Single Rock",
+  "width": 20,
+  "height": 10,
+  "tileSize": 32,
+
+  "terrain": {
+    "default": {
+      "type": "grass",
+      "passable": true,
+      "height": 0,
+      "visual": "grass"
+    },
+    "tiles": [
+      {"x": 10, "y": 5, "type": "rock", "passable": false, "height": 2}
+    ]
+  },
+
+  "features": [],
+
+  "spawnPoints": [
+    {"team": 0, "x": 2, "y": 5, "radius": 2},
+    {"team": 1, "x": 17, "y": 5, "radius": 2}
+  ],
+
+  "metadata": {
+    "author": "Test Suite",
+    "created": "2025-10-13",
+    "description": "Simple map with single rock obstacle for pathfinding tests"
+  }
+}

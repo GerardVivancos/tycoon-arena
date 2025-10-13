@@ -199,3 +199,4 @@ Why this combination:
    Tell me which follow-up you want and I will implement it next.
 - ./launch-all.sh can be used to start the server and some clients
 - don't start the server and client, just make sure it builds and I will do the testing unless I tell you otherwise
+- one goal is to end up having a visual editor. Related to that, once the editor exists, it should be able to be used to create the test scenarios' json

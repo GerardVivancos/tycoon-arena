@@ -5,7 +5,9 @@
 - ⚡ [**CURRENT STATE**](CURRENT_STATE.md) - **START HERE**: Quick reference for current features and systems
 - 🏗️ [System Architecture](ARCHITECTURE.md) - Technical implementation guide and handoff documentation
 - 🌐 [Network Protocol](NETWORK_PROTOCOL.md) - Formal protocol specification (Quake 3 model)
-- 🗺️ [Map System Design](MAP_SYSTEM.md) - Terrain, camera, and occlusion system (in progress)
+- 🗺️ [Map System Design](MAP_SYSTEM.md) - Terrain, camera, and occlusion system
+- 🧭 [Pathfinding Implementation](PATHFINDING_IMPLEMENTATION.md) - A* pathfinding with collision avoidance
+- 🧪 [Test Framework](TEST_FRAMEWORK.md) - Declarative JSON scenarios with SVG visualization
 
 ## Planning Documents
 - 📋 [Godot Implementation Plan](planning/GODOT_PLAN.md) - Initial planning for Godot client architecture

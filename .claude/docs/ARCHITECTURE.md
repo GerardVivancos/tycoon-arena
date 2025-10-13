@@ -1,9 +1,22 @@
 # System Architecture & Implementation Guide
 
-> **📍 For current implementation details, see [CURRENT_STATE.md](CURRENT_STATE.md)**
+> **⚠️ OUTDATED SECTIONS: This document was written during Sprint 1-2**
 >
-> This document covers core networking architecture (Quake 3 model, tick system, concurrency).
-> Game mechanics have evolved - see CURRENT_STATE.md and SPRINT_3_PROGRESS.md for latest features.
+> **What's still accurate:**
+> - ✅ Network architecture (Quake 3 model, tick system, concurrency)
+> - ✅ Server/client structure and UDP communication
+> - ✅ Message protocol basics
+>
+> **What's outdated:**
+> - ❌ Movement system (now tile-based with A* pathfinding, not delta movement)
+> - ❌ Spawn logic (now uses map spawn points, spawns 5 workers per player)
+> - ❌ Arena dimensions (now dynamic map sizes, not fixed 800×600)
+> - ❌ Speed constants (now 4 tiles/second, not 200 units/second)
+>
+> **For current implementation, see:**
+> - 📍 [CURRENT_STATE.md](CURRENT_STATE.md) - Current features and systems
+> - 🧭 [PATHFINDING_IMPLEMENTATION.md](PATHFINDING_IMPLEMENTATION.md) - Movement system
+> - 🗺️ [MAP_SYSTEM_PHASES_1-3_COMPLETE.md](sprints/MAP_SYSTEM_PHASES_1-3_COMPLETE.md) - Map system
 
 ## Table of Contents
 1. [System Overview](#system-overview)

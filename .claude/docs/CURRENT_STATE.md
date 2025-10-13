@@ -1,8 +1,8 @@
 # Current Project State - Quick Reference
 
 **Last Updated:** 2025-10-13
-**Sprint:** Sprint 3 (RTS Controls & Formations) - ✅ Complete
-**Current:** Map System (Phases 1-3) - ✅ Complete
+**Sprint:** Pathfinding & Testing - ✅ Complete
+**Previous:** Map System (Phases 1-3) - ✅ Complete
 
 ---
 
@@ -10,6 +10,8 @@
 
 **Multiplayer RTS Game with:**
 - ✅ 5 workers per player, multi-unit selection and control
+- ✅ **A* pathfinding** - Units navigate around obstacles intelligently
+- ✅ **Dynamic collision avoidance** - Units wait/reroute when blocked
 - ✅ Tile-based movement with 3 formation types (Box, Line, Spread)
 - ✅ Isometric rendering with terrain visualization
 - ✅ Drag-to-select box selection
@@ -17,12 +19,14 @@
 - ✅ Combat system (attack enemy buildings)
 - ✅ Server-authoritative networking (UDP, 20Hz tick rate)
 - ✅ Client-side prediction and interpolation
-- ✅ **NEW:** 40×30 tile maps with terrain (grass, rocks, obstacles)
-- ✅ **NEW:** Camera zoom (0.5× to 2.0×) and pan (WASD/arrows/trackpad)
-- ✅ **NEW:** Visual terrain rendering (green grass, gray rocks)
+- ✅ 40×30 tile maps with terrain (grass, rocks, obstacles)
+- ✅ Camera zoom (0.5× to 2.0×) and pan (WASD/arrows/trackpad)
+- ✅ **Unit tests** - 5 passing tests for pathfinding and game logic
+- ✅ **Visual test framework** - JSON scenarios → SVG diagrams
 
 **Current Map:** 40×30 tiles with 7 rock obstacles
-**Next Feature:** Additional terrain features, win conditions, or more unit types
+**Testing:** Declarative scenario framework with visual output
+**Next Feature:** Scenario runner, win conditions, or visual editor
 
 ---
 
@@ -147,6 +151,23 @@ cd server && go run main.go
 - **Bounds**: Dynamic based on map size with 20% edge padding
 - **Zoom-aware**: Boundaries adjust for current zoom level
 
+### 10. Pathfinding System ✅
+- **Algorithm**: A* with Manhattan distance heuristic
+- **Movement**: 4-directional (N, E, S, W)
+- **Avoids**: Terrain obstacles, buildings, other unit destinations
+- **Dynamic collision**: Units pause when next waypoint occupied
+- **Rerouting**: Automatic after 1 second of blocking
+- **Path following**: Waypoint-by-waypoint, smooth interpolation
+- **Server-side only**: Client receives current+next tile, not full path
+
+### 11. Testing Framework ✅
+- **Unit tests**: 5 tests covering pathfinding, formations, collisions
+- **Test maps**: 3 specialized maps (single rock, cluster, corridor)
+- **Declarative scenarios**: JSON-based test definitions
+- **Visual output**: Automatic SVG diagram generation
+- **CLI tool**: `scenario-viz` generates visuals from JSON
+- **Example scenarios**: 2 working examples with SVG output
+
 ---
 
 ## File Structure
@@ -154,25 +175,49 @@ cd server && go run main.go
 ```
 realtime-game-engine/
 ├── server/
-│   ├── main.go              # Entire server (700+ lines)
+│   ├── main.go              # Entire server (1400+ lines with pathfinding)
+│   ├── game_test.go         # Unit tests (5 tests)
+│   ├── testutil/
+│   │   ├── scenario.go           # Scenario schema + loader
+│   │   ├── scenario_renderer.go  # SVG generation
+│   │   ├── test_server.go        # Test utilities
+│   │   └── assertions.go         # Test assertions
+│   ├── cmd/
+│   │   └── scenario-viz/
+│   │       └── main.go      # CLI visualization tool
 │   └── go.mod
 ├── client/
 │   ├── project.godot        # Godot project config
 │   ├── Main.tscn            # Main scene
 │   ├── Player.tscn          # Worker unit prefab
-│   ├── GameController.gd    # Main game logic (600+ lines)
+│   ├── GameController.gd    # Main game logic (880+ lines)
 │   ├── NetworkManager.gd    # UDP networking
 │   └── Player.gd            # Unit visuals & interpolation
+├── maps/
+│   ├── default.json         # 40×30 main map
+│   ├── test_single_rock.json    # Test map
+│   ├── test_rock_cluster.json   # Test map
+│   ├── test_corridor.json       # Test map
+│   └── scenarios/
+│       ├── navigate_around_rock.json
+│       ├── formation_around_cluster.json
+│       └── visuals/
+│           ├── navigate_around_rock.svg
+│           └── formation_around_cluster.svg
 ├── Claude.md               # Project overview & instructions
 ├── launch_all.sh           # Multi-client test script
 └── .claude/docs/
     ├── CURRENT_STATE.md         # This file
     ├── ARCHITECTURE.md          # Detailed architecture
     ├── NETWORK_PROTOCOL.md      # Protocol specification
+    ├── PATHFINDING_IMPLEMENTATION.md  # Pathfinding docs
+    ├── TEST_FRAMEWORK.md        # Testing framework docs
+    ├── PATHFINDING_PLAN.md      # Original pathfinding plan
     ├── sprints/
     │   ├── SPRINT_1_COMPLETE.md
     │   ├── SPRINT_2_COMPLETE.md
-    │   └── SPRINT_3_PROGRESS.md # Latest work
+    │   ├── SPRINT_3_PROGRESS.md
+    │   └── MAP_SYSTEM_PHASES_1-3_COMPLETE.md
     └── README.md                # Documentation index
 ```
 
@@ -251,11 +296,11 @@ realtime-game-engine/
 ## Known Issues & Limitations
 
 ### Current Limitations
-1. **No pathfinding**: Units move directly to target, no navigation around obstacles
-2. **Formation edge cases**: Units may stack if formation blocked by terrain
-3. **Single terrain layer**: No multi-tile features (forests, mountains) yet
-4. **No win conditions**: Game continues indefinitely
-5. **No fog of war**: All terrain visible at all times
+1. **Formation edge cases**: Units can still pile up slightly at map edges when blocked
+2. **Single terrain layer**: No multi-tile features (forests, mountains) yet
+3. **No win conditions**: Game continues indefinitely
+4. **No fog of war**: All terrain visible at all times
+5. **4-directional movement only**: No diagonal pathfinding yet
 
 ### Known Quirks
 1. **Client IDs skip numbers**: Due to shared ID counter (cosmetic only)

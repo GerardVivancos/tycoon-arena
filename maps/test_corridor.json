@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "name": "Test - Narrow Corridor",
+  "width": 20,
+  "height": 10,
+  "tileSize": 32,
+
+  "terrain": {
+    "default": {
+      "type": "grass",
+      "passable": true,
+      "height": 0,
+      "visual": "grass"
+    },
+    "tiles": [
+      {"x": 10, "y": 3, "type": "rock", "passable": false, "height": 2},
+      {"x": 10, "y": 4, "type": "rock", "passable": false, "height": 2},
+      {"x": 10, "y": 6, "type": "rock", "passable": false, "height": 2},
+      {"x": 10, "y": 7, "type": "rock", "passable": false, "height": 2}
+    ]
+  },
+
+  "features": [],
+
+  "spawnPoints": [
+    {"team": 0, "x": 2, "y": 5, "radius": 1},
+    {"team": 1, "x": 17, "y": 5, "radius": 1}
+  ],
+
+  "metadata": {
+    "author": "Test Suite",
+    "created": "2025-10-13",
+    "description": "Narrow corridor (1 tile wide) for collision avoidance tests"
+  }
+}

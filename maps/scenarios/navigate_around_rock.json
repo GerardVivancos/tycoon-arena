@@ -1,0 +1,58 @@
+{
+  "name": "Navigate Around Single Rock",
+  "map": "test_single_rock.json",
+  "description": "Verifies pathfinding routes around a single obstacle",
+
+  "setup": {
+    "units": [
+      {
+        "id": "unit1",
+        "team": 0,
+        "type": "worker",
+        "position": [5, 5],
+        "label": "A"
+      }
+    ]
+  },
+
+  "actions": [
+    {
+      "tick": 0,
+      "type": "move",
+      "unitIds": ["unit1"],
+      "target": [15, 5],
+      "formation": "box"
+    }
+  ],
+
+  "expectations": {
+    "maxTicks": 100,
+    "finalState": {
+      "units": [
+        {
+          "id": "unit1",
+          "position": [15, 5],
+          "state": "stopped",
+          "label": "A'"
+        }
+      ]
+    },
+    "constraints": {
+      "pathMustAvoid": [[10, 5]],
+      "noStacking": true,
+      "pathExists": true
+    }
+  },
+
+  "visual": {
+    "annotations": [
+      {
+        "type": "arrow",
+        "from": [5, 5],
+        "to": [15, 5],
+        "style": "expected-path",
+        "label": "Expected path (around rock)"
+      }
+    ]
+  }
+}
