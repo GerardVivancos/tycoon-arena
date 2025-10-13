@@ -79,8 +79,9 @@ type Command struct {
 }
 
 type MoveCommand struct {
-	TargetTileX int `json:"targetTileX"`
-	TargetTileY int `json:"targetTileY"`
+	UnitIds     []uint32 `json:"unitIds"` // Which units to move
+	TargetTileX int      `json:"targetTileX"`
+	TargetTileY int      `json:"targetTileY"`
 }
 
 type BuildCommand struct {
@@ -126,7 +127,7 @@ type Client struct {
 	Name                string
 	Addr                *net.UDPAddr
 	LastSeen            time.Time
-	Entity              *Entity
+	OwnedUnits          []uint32 // Entity IDs of units owned by this player
 	Money               float32
 	LastProcessedSeq    uint32
 	LastAckTick         uint64 // For delta compression (not implemented)
@@ -210,10 +211,11 @@ func (s *GameServer) gameTick() {
 	for id, client := range s.clients {
 		if now.Sub(client.LastSeen) > ClientTimeout {
 			log.Printf("Client %d (%s) timed out (no heartbeat/input for %v)", id, client.Name, ClientTimeout)
-			delete(s.clients, id)
-			if client.Entity != nil {
-				delete(s.entities, client.Entity.Id)
+			// Delete all owned units
+			for _, unitId := range client.OwnedUnits {
+				delete(s.entities, unitId)
 			}
+			delete(s.clients, id)
 		}
 	}
 
@@ -241,7 +243,8 @@ func (s *GameServer) gameTick() {
 	// Update entity movement
 	deltaTime := 1.0 / float32(TickRate)
 	for _, entity := range s.entities {
-		if entity.Type == "player" {
+		// Update movement for all unit types
+		if entity.Type == "worker" || entity.Type == "player" {
 			s.updateEntityMovement(entity, deltaTime)
 		}
 	}
@@ -341,40 +344,44 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 	clientId := s.nextId
 	s.nextId++
 
-	// Create player entity
-	entityId := s.nextId
-	s.nextId++
+	// Spawn starting units for this player (3 workers)
+	spawnBaseTileX := 3 + len(s.clients)*5
+	spawnBaseTileY := ArenaTilesHeight / 2
 
-	// Spawn at different positions based on number of existing clients
-	spawnTileX := 3 + len(s.clients)*5
-	spawnTileY := ArenaTilesHeight / 2
+	ownedUnits := make([]uint32, 0, 3)
+	for i := 0; i < 3; i++ {
+		entityId := s.nextId
+		s.nextId++
 
-	entity := &Entity{
-		Id:           entityId,
-		OwnerId:      clientId,
-		Type:         "player",
-		TileX:        spawnTileX,
-		TileY:        spawnTileY,
-		TargetTileX:  spawnTileX,
-		TargetTileY:  spawnTileY,
-		MoveProgress: 0.0,
-		Health:       100,
-		MaxHealth:    100,
+		worker := &Entity{
+			Id:           entityId,
+			OwnerId:      clientId,
+			Type:         "worker",
+			TileX:        spawnBaseTileX + i,
+			TileY:        spawnBaseTileY,
+			TargetTileX:  spawnBaseTileX + i,
+			TargetTileY:  spawnBaseTileY,
+			MoveProgress: 0.0,
+			Health:       100,
+			MaxHealth:    100,
+		}
+
+		s.entities[entityId] = worker
+		ownedUnits = append(ownedUnits, entityId)
 	}
 
 	client := &Client{
-		Id:       clientId,
-		Name:     hello.PlayerName,
-		Addr:     clientAddr,
-		LastSeen: time.Now(),
-		Entity:   entity,
-		Money:    StartingMoney,
+		Id:         clientId,
+		Name:       hello.PlayerName,
+		Addr:       clientAddr,
+		LastSeen:   time.Now(),
+		OwnedUnits: ownedUnits,
+		Money:      StartingMoney,
 	}
 
 	s.clients[clientId] = client
-	s.entities[entityId] = entity
 
-	log.Printf("Client %d (%s) connected from %s", clientId, hello.PlayerName, clientAddr.String())
+	log.Printf("Client %d (%s) connected from %s with %d workers", clientId, hello.PlayerName, clientAddr.String(), len(ownedUnits))
 
 	// Send welcome message
 	welcome := WelcomeMessage{
@@ -488,7 +495,13 @@ func (s *GameServer) updateEntityMovement(entity *Entity, deltaTime float32) {
 
 func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 	moveData, ok := cmd.Data.(map[string]interface{})
-	if !ok || client.Entity == nil {
+	if !ok {
+		return
+	}
+
+	// Get unit IDs to move
+	unitIdsInterface, ok := moveData["unitIds"].([]interface{})
+	if !ok || len(unitIdsInterface) == 0 {
 		return
 	}
 
@@ -511,13 +524,33 @@ func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 		return
 	}
 
-	// Set target (allow stacking of units)
-	client.Entity.TargetTileX = tileX
-	client.Entity.TargetTileY = tileY
+	// Move each selected unit
+	for _, unitIdInterface := range unitIdsInterface {
+		unitIdFloat, ok := unitIdInterface.(float64)
+		if !ok {
+			continue
+		}
+		unitId := uint32(unitIdFloat)
 
-	// If we're setting a new target while already moving, reset progress
-	if client.Entity.TileX != tileX || client.Entity.TileY != tileY {
-		client.Entity.MoveProgress = 0.0
+		// Verify this unit exists and belongs to this player
+		entity, exists := s.entities[unitId]
+		if !exists || entity.OwnerId != client.Id {
+			continue
+		}
+
+		// Only move units, not buildings
+		if entity.Type != "worker" && entity.Type != "player" {
+			continue
+		}
+
+		// Set target (allow stacking of units)
+		entity.TargetTileX = tileX
+		entity.TargetTileY = tileY
+
+		// If we're setting a new target while already moving, reset progress
+		if entity.TileX != tileX || entity.TileY != tileY {
+			entity.MoveProgress = 0.0
+		}
 	}
 }
 

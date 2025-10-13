@@ -24,12 +24,12 @@ const ISO_OFFSET_X = 400    # Screen offset to center the map
 const ISO_OFFSET_Y = 100
 
 var player_scene = preload("res://Player.tscn")
-var entities: Dictionary = {}  # entity_id -> Player node or Building node
-var local_player: Node = null
+var entities: Dictionary = {}  # entity_id -> unit/building node
 var local_client_id: int = -1
 var local_money: float = 0.0
 var players_data: Dictionary = {}
-var selected_entity_id: int = -1
+var selected_units: Array[int] = []  # Entity IDs of selected units
+var selected_target_id: int = -1  # Target for attacks (buildings)
 var selected_building: Node2D = null
 var event_messages: Array = []
 
@@ -116,26 +116,25 @@ func _on_snapshot_received(snapshot: Dictionary):
 		# Convert to isometric screen position
 		var screen_pos = tile_to_iso(interp_tile_x, interp_tile_y)
 
-		if entity_type == "player":
+		if entity_type == "player" or entity_type == "worker":
 			if entity_id in entities:
-				# Update existing entity
-				var player = entities[entity_id]
-				player.update_from_snapshot(screen_pos, health, max_health)
+				# Update existing unit
+				var unit = entities[entity_id]
+				unit.update_from_snapshot(screen_pos, health, max_health)
 			else:
-				# Create new entity
-				var player = player_scene.instantiate()
+				# Create new unit
+				var unit = player_scene.instantiate()
 				var is_local = (owner_id == local_client_id)
-				player.setup(entity_id, owner_id, screen_pos, is_local)
+				unit.setup(entity_id, owner_id, screen_pos, is_local)
 
 				if is_local:
-					local_player = player
-					player.set_player_name("You")
+					unit.set_player_name("Worker")
 				else:
-					player.set_player_name("Player %d" % owner_id)
+					unit.set_player_name("Enemy")
 
-				entities_container.add_child(player)
-				entities[entity_id] = player
-				print("Spawned player entity %d at tile (%d, %d) -> screen (%f, %f)" % [entity_id, tile_x, tile_y, screen_pos.x, screen_pos.y])
+				entities_container.add_child(unit)
+				entities[entity_id] = unit
+				print("Spawned %s entity %d at tile (%d, %d)" % [entity_type, entity_id, tile_x, tile_y])
 
 		elif entity_type == "generator":
 			if entity_id in entities:
@@ -156,13 +155,14 @@ func _on_snapshot_received(snapshot: Dictionary):
 			var entity = entities[entity_id]
 			entity.queue_free()
 			entities.erase(entity_id)
-			if entity == local_player:
-				local_player = null
-			if entity_id == selected_entity_id:
-				selected_entity_id = -1
+			# Remove from selection if it was selected
+			if entity_id in selected_units:
+				selected_units.erase(entity_id)
+			# Clear target if it was the selected target
+			if entity_id == selected_target_id:
+				selected_target_id = -1
 				selected_building = null
-				selection_label.text = "No target selected"
-				log_event("Target destroyed!")
+				selection_label.text = ""
 			print("Removed entity %d" % entity_id)
 
 	# Update player list
@@ -171,7 +171,9 @@ func _on_snapshot_received(snapshot: Dictionary):
 func _on_disconnected_from_server():
 	connection_label.text = "Disconnected"
 	local_client_id = -1
-	local_player = null
+	selected_units.clear()
+	selected_target_id = -1
+	selected_building = null
 
 	# Clear all entities
 	for entity in entities.values():
@@ -210,27 +212,79 @@ func _draw():
 	draw_circle(tile_to_iso(0, 0), 5.0, Color(1, 0, 0, 1.0))
 
 func _unhandled_input(event):
-	if not network_manager.is_connected or local_player == null or tile_size == 0:
+	if not network_manager.is_connected or tile_size == 0:
 		return
 
-	# Click to move
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
+	# Left click to select unit
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		var click_pos = get_local_mouse_position()
+		print("Left click at: ", click_pos)
+		var clicked_entity_id = get_entity_at_position(click_pos)
+		print("Clicked entity ID: ", clicked_entity_id)
+
+		if clicked_entity_id != -1:
+			var entity = entities.get(clicked_entity_id)
+			var entity_owner = entity.get_meta("owner_id", -1) if entity else -1
+			print("Entity owner: ", entity_owner, " local_client_id: ", local_client_id)
+			if entity and entity.has_method("get_meta") and entity_owner == local_client_id:
+				# This is our unit - select it
+				selected_units.clear()
+				selected_units.append(clicked_entity_id)
+				update_selection_visual()
+				log_event("Selected unit %d" % clicked_entity_id)
+				print("Selected unit: ", clicked_entity_id)
+			else:
+				print("Not our unit or invalid entity")
+
+	# Right click to move selected units
+	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
+		if selected_units.is_empty():
+			log_event("No units selected")
+			return
+
 		# Convert isometric click to tile coordinates
 		var click_pos = get_local_mouse_position()
 		var tile_coords = iso_to_tile(click_pos)
 
-		print("Click at local: ", click_pos, " -> tile: ", tile_coords)
+		print("Move command: units ", selected_units, " -> tile: ", tile_coords)
 
-		# Send move command
+		# Send move command with selected unit IDs
 		var commands = [{
 			"type": "move",
 			"data": {
+				"unitIds": selected_units,
 				"targetTileX": tile_coords.x,
 				"targetTileY": tile_coords.y
 			}
 		}]
 		network_manager.send_input(commands)
-		log_event("Moving to tile (%d, %d)" % [tile_coords.x, tile_coords.y])
+		log_event("Moving %d units to tile (%d, %d)" % [selected_units.size(), tile_coords.x, tile_coords.y])
+
+func get_entity_at_position(screen_pos: Vector2) -> int:
+	# Check all entities to see if click is within their bounds
+	for entity_id in entities:
+		var entity = entities[entity_id]
+		if entity and entity is Node2D:
+			# Simple distance check (works for circular units)
+			# Both screen_pos and entity.position are in local coordinates
+			var distance = entity.position.distance_to(screen_pos)
+			if distance < 15:  # Click radius
+				return entity_id
+	return -1
+
+func update_selection_visual():
+	# Clear all selection visuals first
+	for entity_id in entities:
+		var entity = entities[entity_id]
+		if entity and entity.has_method("set_selected"):
+			entity.set_selected(false)
+
+	# Show selection for selected units
+	for unit_id in selected_units:
+		if unit_id in entities:
+			var entity = entities[unit_id]
+			if entity and entity.has_method("set_selected"):
+				entity.set_selected(true)
 
 func update_player_list():
 	var text = "Players:\n"
@@ -358,8 +412,8 @@ func _on_building_clicked(viewport, event, shape_idx, entity_id):
 			var old_highlight = selected_building.get_meta("highlight")
 			old_highlight.visible = false
 
-		# Set new selection
-		selected_entity_id = entity_id
+		# Set new target
+		selected_target_id = entity_id
 		if entity_id in entities:
 			selected_building = entities[entity_id]
 			if selected_building.has_meta("highlight"):
@@ -387,15 +441,21 @@ func log_event(message: String):
 	event_log.text = log_text
 
 func _on_build_button_pressed():
-	if not network_manager.is_connected or local_player == null or tile_size == 0:
+	if not network_manager.is_connected or tile_size == 0 or selected_units.is_empty():
+		log_event("No units selected to build!")
 		return
 
-	# Build near the player - convert player isometric position to tiles
-	var player_tile = iso_to_tile(local_player.position)
+	# Build near the first selected unit
+	var first_unit_id = selected_units[0]
+	if not (first_unit_id in entities):
+		return
+
+	var first_unit = entities[first_unit_id]
+	var unit_tile = iso_to_tile(first_unit.position)
 
 	# Build 3 tiles to the right
-	var build_tile_x = player_tile.x + 3
-	var build_tile_y = player_tile.y
+	var build_tile_x = unit_tile.x + 3
+	var build_tile_y = unit_tile.y
 
 	# Client-side validation
 	if not can_build_at_tile(build_tile_x, build_tile_y):
@@ -436,15 +496,16 @@ func can_build_at_tile(tile_x: int, tile_y: int) -> bool:
 	return true
 
 func _on_attack_button_pressed():
-	if not network_manager.is_connected or selected_entity_id == -1:
+	if not network_manager.is_connected or selected_target_id == -1:
+		log_event("No target selected!")
 		return
 
-	# Check if selected entity exists and is not owned by us
-	if not (selected_entity_id in entities):
-		log_event("No valid target selected!")
+	# Check if target entity exists and is not owned by us
+	if not (selected_target_id in entities):
+		log_event("Target no longer exists!")
 		return
 
-	var target = entities[selected_entity_id]
+	var target = entities[selected_target_id]
 	var target_owner = target.get_meta("owner_id") if target.has_meta("owner_id") else -1
 
 	if target_owner == local_client_id:
@@ -454,8 +515,8 @@ func _on_attack_button_pressed():
 	var commands = [{
 		"type": "attack",
 		"data": {
-			"targetId": selected_entity_id
+			"targetId": selected_target_id
 		}
 	}]
 	network_manager.send_input(commands)
-	log_event("Attacking entity %d..." % selected_entity_id)
+	log_event("Attacking entity %d..." % selected_target_id)

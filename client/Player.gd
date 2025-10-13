@@ -6,6 +6,7 @@ var is_local_player: bool = false
 var player_name: String = "Player"
 var health: int = 100
 var max_health: int = 100
+var is_selected: bool = false
 
 # For interpolation
 var target_position: Vector2
@@ -15,6 +16,12 @@ func _ready():
 	# Create isometric player visual
 	create_isometric_sprite()
 
+func set_selected(selected: bool):
+	is_selected = selected
+	# Update selection visual
+	if has_node("SelectionRing"):
+		$SelectionRing.visible = selected
+
 func setup(id: int, owner: int, pos: Vector2, is_local: bool = false):
 	entity_id = id
 	owner_id = owner
@@ -22,15 +29,32 @@ func setup(id: int, owner: int, pos: Vector2, is_local: bool = false):
 	target_position = pos
 	is_local_player = is_local
 
+	# Set metadata for selection system
+	set_meta("entity_id", id)
+	set_meta("owner_id", owner)
+
 	create_isometric_sprite()
 
 func create_isometric_sprite():
 	# Clear old visuals
 	for child in get_children():
-		if child.name == "Shadow" or child.name == "Body" or child.name == "ColorRect":
+		if child.name in ["Shadow", "Body", "ColorRect", "SelectionRing"]:
 			child.queue_free()
 
 	var base_color = Color(0, 1, 0.5, 1) if is_local_player else Color(0, 0.5, 1, 1)
+
+	# Selection ring (hidden by default)
+	var selection_ring = Polygon2D.new()
+	selection_ring.name = "SelectionRing"
+	var ring_points = PackedVector2Array()
+	for i in range(20):
+		var angle = i * PI * 2 / 20
+		ring_points.append(Vector2(cos(angle) * 14, sin(angle) * 7 + 10))
+	selection_ring.polygon = ring_points
+	selection_ring.color = Color(1, 1, 0, 0.6)  # Yellow
+	selection_ring.visible = is_selected
+	selection_ring.z_index = -2
+	add_child(selection_ring)
 
 	# Shadow (ellipse at base)
 	var shadow = Polygon2D.new()
