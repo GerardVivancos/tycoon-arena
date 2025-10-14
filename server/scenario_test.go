@@ -150,6 +150,9 @@ func (a *TestGameServerAdapter) SpawnBuilding(buildingType string, team int, x, 
 
 // Tick advances the game simulation by one tick
 func (a *TestGameServerAdapter) Tick() {
+	// Update formation followers to maintain formation shape
+	a.server.tickFormations()
+
 	// Process movement for all entities
 	for _, entity := range a.server.entities {
 		if entity.Type == "worker" || entity.Type == "unit" {

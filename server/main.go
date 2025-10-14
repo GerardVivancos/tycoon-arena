@@ -155,6 +155,18 @@ type Client struct {
 	LastAckTick      uint64 // For delta compression (not implemented)
 }
 
+// FormationGroup tracks units moving together in formation
+type FormationGroup struct {
+	ID        uint32
+	Type      string                  // "box", "line", "spread"
+	LeaderID  uint32                  // Entity ID of the leader (tip unit)
+	MemberIDs []uint32                // All entity IDs in formation (including leader)
+	Offsets   map[uint32]TilePosition // Relative position of each member to leader
+	TargetX   int                     // Final destination
+	TargetY   int                     // Final destination
+	IsMoving  bool                    // Whether formation is actively moving
+}
+
 // Map system types
 type TileCoord struct {
 	X int
@@ -229,24 +241,28 @@ type QueuedInput struct {
 }
 
 type GameServer struct {
-	conn       *net.UDPConn
-	clients    map[uint32]*Client
-	entities   map[uint32]*Entity
-	tick       uint64
-	nextId     uint32
-	mu         sync.RWMutex
-	inputQueue []QueuedInput
-	queueMu    sync.Mutex
-	mapData    *MapData // Map configuration
+	conn            *net.UDPConn
+	clients         map[uint32]*Client
+	entities        map[uint32]*Entity
+	formations      map[uint32]*FormationGroup // Active formation groups
+	tick            uint64
+	nextId          uint32
+	nextFormationID uint32
+	mu              sync.RWMutex
+	inputQueue      []QueuedInput
+	queueMu         sync.Mutex
+	mapData         *MapData // Map configuration
 }
 
 func NewGameServer() *GameServer {
 	return &GameServer{
-		clients:    make(map[uint32]*Client),
-		entities:   make(map[uint32]*Entity),
-		tick:       0,
-		nextId:     1,
-		inputQueue: make([]QueuedInput, 0),
+		clients:         make(map[uint32]*Client),
+		entities:        make(map[uint32]*Entity),
+		formations:      make(map[uint32]*FormationGroup),
+		tick:            0,
+		nextId:          1,
+		nextFormationID: 1,
+		inputQueue:      make([]QueuedInput, 0),
 	}
 }
 
@@ -384,6 +400,9 @@ func (s *GameServer) gameTick() {
 			s.updateEntityMovement(entity, deltaTime)
 		}
 	}
+
+	// Update formations (followers maintain offset from leader)
+	s.tickFormations()
 
 	// Generate resources from buildings
 	for _, entity := range s.entities {
@@ -659,6 +678,7 @@ func (s *GameServer) updateEntityMovement(entity *Entity, deltaTime float32) {
 	// If so, pause movement this tick (unit waits for other unit to pass)
 	if entity.MoveProgress < 1.0 {
 		// Check if waypoint is occupied by another unit's current position
+		// Allow friendly units (same owner) to pass through each other
 		isBlocked := false
 		for _, other := range s.entities {
 			if other.Id == entity.Id {
@@ -667,7 +687,11 @@ func (s *GameServer) updateEntityMovement(entity *Entity, deltaTime float32) {
 			if other.Type != "worker" && other.Type != "player" {
 				continue
 			}
-			// Check if other unit is currently at this waypoint
+			// Skip friendly units - allow passing through teammates
+			if other.OwnerId == entity.OwnerId {
+				continue
+			}
+			// Check if enemy unit is currently at this waypoint
 			if other.TileX == waypoint.X && other.TileY == waypoint.Y {
 				isBlocked = true
 				break
@@ -687,7 +711,7 @@ func (s *GameServer) updateEntityMovement(entity *Entity, deltaTime float32) {
 				// Recalculate path from current position to goal
 				newPath := s.findPath(entity.TileX, entity.TileY, finalGoal.X, finalGoal.Y, entity.Id)
 
-				if newPath != nil && len(newPath) > 0 {
+				if len(newPath) > 0 {
 					// Found alternate route
 					entity.Path = newPath
 					entity.PathIndex = 0
@@ -727,6 +751,57 @@ func (s *GameServer) updateEntityMovement(entity *Entity, deltaTime float32) {
 			entity.Path = nil
 			entity.PathIndex = 0
 		}
+	}
+}
+
+// tickFormations updates all active formations
+func (s *GameServer) tickFormations() {
+	// Iterate over all formations
+	for formationID, formation := range s.formations {
+		if !formation.IsMoving {
+			continue
+		}
+
+		// Get leader
+		leader, leaderExists := s.entities[formation.LeaderID]
+		if !leaderExists {
+			// Leader doesn't exist, disband formation
+			delete(s.formations, formationID)
+			continue
+		}
+
+		// Check if leader reached destination
+		leaderAtTarget := leader.TileX == formation.TargetX && leader.TileY == formation.TargetY
+		leaderPathComplete := len(leader.Path) == 0
+
+		if leaderAtTarget && leaderPathComplete {
+			// Leader reached destination - check if all followers have also arrived
+			allArrived := true
+			for _, memberID := range formation.MemberIDs {
+				if memberID == formation.LeaderID {
+					continue
+				}
+				member := s.entities[memberID]
+				if member != nil {
+					// Check if follower is still moving
+					if len(member.Path) > 0 && member.PathIndex < len(member.Path) {
+						allArrived = false
+						break
+					}
+				}
+			}
+
+			if allArrived {
+				// All units arrived, disband formation
+				formation.IsMoving = false
+				delete(s.formations, formationID)
+			}
+			// If not all arrived, keep formation active but don't update paths
+			continue
+		}
+
+		// Formation is still moving - no updates needed since all units have their paths set
+		// This function just tracks formation lifecycle now
 	}
 }
 
@@ -1410,6 +1485,25 @@ func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 		return
 	}
 
+	// If only one unit, use simple pathfinding without formations
+	if len(validUnitIds) == 1 {
+		unitId := validUnitIds[0]
+		entity := s.entities[unitId]
+
+		// Single unit pathfinding - no formation needed
+		path := s.findPath(entity.TileX, entity.TileY, tileX, tileY, entity.Id)
+		if len(path) > 0 {
+			entity.Path = path
+			entity.PathIndex = 0
+			entity.MoveProgress = 0.0
+			if len(path) > 0 {
+				entity.TargetTileX = path[0].X
+				entity.TargetTileY = path[0].Y
+			}
+		}
+		return
+	}
+
 	// Sort units by distance to target (closest first becomes tip)
 	sort.Slice(validUnitIds, func(i, j int) bool {
 		entity1 := s.entities[validUnitIds[i]]
@@ -1420,57 +1514,149 @@ func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 		return dist1 < dist2
 	})
 
+	// If target tile is impassable, find nearest passable tile
+	finalTargetX := tileX
+	finalTargetY := tileY
+	if !s.isTilePassable(tileX, tileY) {
+		// Search for nearest passable tile in a small radius
+		found := false
+		for radius := 1; radius <= 5 && !found; radius++ {
+			for dx := -radius; dx <= radius && !found; dx++ {
+				for dy := -radius; dy <= radius && !found; dy++ {
+					if abs(dx)+abs(dy) != radius {
+						continue // Only check tiles at current radius (Manhattan distance)
+					}
+					checkX := tileX + dx
+					checkY := tileY + dy
+					if checkX >= 0 && checkX < s.mapData.Width && checkY >= 0 && checkY < s.mapData.Height {
+						if s.isTilePassable(checkX, checkY) && !s.isTileOccupiedByUnit(checkX, checkY, 0) {
+							finalTargetX = checkX
+							finalTargetY = checkY
+							found = true
+						}
+					}
+				}
+			}
+		}
+		if !found {
+			log.Printf("No passable tile found near target (%d,%d)", tileX, tileY)
+			return
+		}
+	}
+
 	// Calculate movement direction for oriented formations
-	dx, dy := s.calculateMovementDirection(validUnitIds, tileX, tileY)
+	dx, dy := s.calculateMovementDirection(validUnitIds, finalTargetX, finalTargetY)
 	direction := getPrimaryDirection(dx, dy)
 
 	// Calculate formation positions (oriented based on movement direction)
 	var formationPositions []TilePosition
 	switch formation {
 	case "box":
-		formationPositions = s.calculateBoxFormationOriented(tileX, tileY, len(validUnitIds), direction)
+		formationPositions = s.calculateBoxFormationOriented(finalTargetX, finalTargetY, len(validUnitIds), direction)
 	case "line":
-		formationPositions = s.calculateLineFormationOriented(tileX, tileY, len(validUnitIds), direction)
+		formationPositions = s.calculateLineFormationOriented(finalTargetX, finalTargetY, len(validUnitIds), direction)
 	case "spread":
 		// Spread formation doesn't need orientation (radially symmetric)
-		formationPositions = s.calculateSpiralFormation(tileX, tileY, len(validUnitIds))
+		formationPositions = s.calculateSpiralFormation(finalTargetX, finalTargetY, len(validUnitIds))
 	default:
 		// Default to box formation
-		formationPositions = s.calculateBoxFormationOriented(tileX, tileY, len(validUnitIds), direction)
+		formationPositions = s.calculateBoxFormationOriented(finalTargetX, finalTargetY, len(validUnitIds), direction)
 	}
 
-	// Assign each unit to its formation position using pathfinding
-	for i, unitId := range validUnitIds {
-		entity := s.entities[unitId]
+	// Create formation group for coordinated movement
+	leaderID := validUnitIds[0] // Closest unit is leader
+	leader := s.entities[leaderID]
 
-		var targetX, targetY int
+	// Calculate offsets for each unit relative to leader's current position
+	offsets := make(map[uint32]TilePosition)
+	for i, unitID := range validUnitIds {
+		// Offset = formation position - leader formation position
+		// This will be used to maintain formation shape relative to leader
 		if i < len(formationPositions) {
-			targetX = formationPositions[i].X
-			targetY = formationPositions[i].Y
-		} else {
-			// Fallback to center if not enough formation positions
-			targetX = tileX
-			targetY = tileY
-		}
+			// Calculate offset from leader's final formation position
+			leaderFinalX := formationPositions[0].X
+			leaderFinalY := formationPositions[0].Y
+			memberFinalX := formationPositions[i].X
+			memberFinalY := formationPositions[i].Y
 
-		// Calculate path to formation position
-		path := s.findPath(entity.TileX, entity.TileY, targetX, targetY, entity.Id)
-
-		if path != nil && len(path) > 0 {
-			// Store path and start following it
-			entity.Path = path
-			entity.PathIndex = 0
-			entity.MoveProgress = 0.0
-
-			// Set target to first waypoint (will be updated as path is followed)
-			if len(path) > 0 {
-				entity.TargetTileX = path[0].X
-				entity.TargetTileY = path[0].Y
+			offsets[unitID] = TilePosition{
+				X: memberFinalX - leaderFinalX,
+				Y: memberFinalY - leaderFinalY,
 			}
 		} else {
-			// No path found, unit stays at current position
-			log.Printf("No path found for unit %d from (%d,%d) to (%d,%d)",
-				entity.Id, entity.TileX, entity.TileY, targetX, targetY)
+			// No offset for units without formation position
+			offsets[unitID] = TilePosition{X: 0, Y: 0}
+		}
+	}
+
+	// Create and store formation group
+	// Use leader's actual formation position as target (not adjusted click point)
+	leaderFormationX := formationPositions[0].X
+	leaderFormationY := formationPositions[0].Y
+
+	formationGroup := &FormationGroup{
+		ID:        s.nextFormationID,
+		Type:      formation,
+		LeaderID:  leaderID,
+		MemberIDs: validUnitIds,
+		Offsets:   offsets,
+		TargetX:   leaderFormationX, // Leader's actual destination
+		TargetY:   leaderFormationY,
+		IsMoving:  true,
+	}
+	s.formations[formationGroup.ID] = formationGroup
+	s.nextFormationID++
+
+	// Debug logging (commented out for performance)
+	// log.Printf("Formation created: %d units, leader=%d, formation.Target=(%d,%d)", len(validUnitIds), leaderID, formationGroup.TargetX, formationGroup.TargetY)
+
+	// Leader pathfinds to destination, followers will maintain offset
+	leaderTargetX := formationPositions[0].X
+	leaderTargetY := formationPositions[0].Y
+	leaderPath := s.findPath(leader.TileX, leader.TileY, leaderTargetX, leaderTargetY, leader.Id)
+
+	if len(leaderPath) > 0 {
+		leader.Path = leaderPath
+		leader.PathIndex = 0
+		leader.MoveProgress = 0.0
+		if len(leaderPath) > 0 {
+			leader.TargetTileX = leaderPath[0].X
+			leader.TargetTileY = leaderPath[0].Y
+		}
+		// Debug logging (commented out for performance)
+		// log.Printf("Leader %d path: %d waypoints", leader.Id, len(leaderPath))
+	} else {
+		log.Printf("No path found for leader unit %d", leader.Id)
+		// Formation can't move, disband it
+		delete(s.formations, formationGroup.ID)
+		return
+	}
+
+	// Initialize follower paths to their final formation positions
+	for i := 1; i < len(validUnitIds); i++ {
+		unitId := validUnitIds[i]
+		entity := s.entities[unitId]
+
+		// Calculate follower's final destination
+		followerTargetX := formationPositions[i].X
+		followerTargetY := formationPositions[i].Y
+
+		entity.TargetTileX = followerTargetX
+		entity.TargetTileY = followerTargetY
+		entity.MoveProgress = 0.0
+
+		// Give follower initial path to final position
+		followerPath := s.findPath(entity.TileX, entity.TileY, followerTargetX, followerTargetY, entity.Id)
+		if len(followerPath) > 0 {
+			entity.Path = followerPath
+			entity.PathIndex = 0
+			// Debug: log.Printf("Follower %d: path found with %d waypoints", unitId, len(followerPath))
+		} else {
+			// No path found - follower stays put
+			entity.Path = nil
+			entity.PathIndex = 0
+			log.Printf("WARNING: Follower %d NO PATH! Tried: (%d,%d) → (%d,%d)",
+				unitId, entity.TileX, entity.TileY, followerTargetX, followerTargetY)
 		}
 	}
 }

@@ -1,8 +1,8 @@
 # Current Project State - Quick Reference
 
-**Last Updated:** 2025-10-13
-**Current Work:** No active work
-**Previous Sprint:** Formation Orientation Refactor - ✅ Complete
+**Last Updated:** 2025-10-14 (Evening Session)
+**Current Work:** ✅ **Formation Movement Fixed** + Test Framework Overhaul
+**Previous Sprint:** Formation Positioning + Movement Debugging - ✅ Complete
 
 ---
 
@@ -11,8 +11,10 @@
 **Multiplayer RTS Game with:**
 - ✅ 5 workers per player, multi-unit selection and control
 - ✅ **A* pathfinding** - Units navigate around obstacles intelligently
-- ✅ **Dynamic collision avoidance** - Units wait/reroute when blocked
+- ✅ **Friendly unit pass-through** - Teammates can pass through each other (enemies still block)
 - ✅ **Direction-aware formations** - Box, Line, Spread formations orient based on movement direction
+- ✅ **Formation movement** - All units pathfind to final positions independently (no bouncing)
+- ✅ **Single unit optimization** - Solo units skip formation system entirely
 - ✅ Isometric rendering with terrain visualization
 - ✅ Drag-to-select box selection
 - ✅ Building placement (generators that produce $10/sec)
@@ -21,10 +23,11 @@
 - ✅ Client-side prediction and interpolation
 - ✅ 40×30 tile maps with terrain (grass, rocks, obstacles)
 - ✅ Camera zoom (0.5× to 2.0×) and pan (WASD/arrows/trackpad)
-- ✅ **Unit tests** - 15 passing tests (pathfinding, formations, terrain, orientation, positioning)
-- ✅ **Scenario test framework** - Declarative JSON scenarios → automated execution
-- ✅ **Test runner** - 2 passing scenario tests integrated with `go test`
-- ✅ **Total: 17 tests** all passing
+- ✅ **Comprehensive test suite** - 18/18 tests passing
+  - 15 unit tests (pathfinding, formations, terrain, collisions)
+  - 2 scenario tests (declarative JSON → automated execution)
+  - 1 comprehensive formation test (ALL units move verification)
+- ✅ **Strict test expectations** - Tests properly catch broken behavior
 
 **Current Map:** 40×30 tiles with 7 rock obstacles
 **Testing:** Full declarative test framework (Phase 1 & 2 complete)
@@ -316,17 +319,78 @@ realtime-game-engine/
 
 ---
 
+## 🔄 Work In Progress
+
+### Formation Movement (Stage 1 - Basic Implementation)
+
+**Status:** Partially working, needs refinement for complex terrain
+
+**What's Implemented:**
+- ✅ `FormationGroup` struct tracks leader, members, offsets, destination
+- ✅ Leader pathfinding to destination (closest unit becomes leader)
+- ✅ Follower offset calculation (maintain formation shape relative to leader)
+- ✅ `tickFormations()` updates follower positions each tick
+- ✅ Formation disbands when leader reaches destination
+- ✅ Helper: `isTileOccupiedByUnit()` for collision detection
+
+**How It Works:**
+1. User issues move command with formation type
+2. Closest unit to click point becomes leader
+3. Offsets calculated for each member (relative to leader's final position)
+4. Leader pathfinds to destination
+5. Each tick, followers attempt to maintain offset from leader's current position
+6. Formation disbands when leader arrives
+
+**Current Issues:**
+- ⚠️ **Follower movement too simple** - One-tile-per-tick toward offset position
+- ⚠️ **No follower pathfinding** - Followers can't navigate around obstacles
+- ⚠️ **Followers lag on complex terrain** - Get stuck when direct path blocked
+- ⚠️ **1 scenario test failing** - `formation_around_cluster` needs adjustment
+- ⚠️ **No formation breaking logic** - Formation doesn't break when blocked
+
+**Next Steps to Complete:**
+1. Add follower pathfinding when direct path blocked
+2. Implement formation breaking when followers can't keep up
+3. Add speed synchronization (leader waits for stragglers)
+4. Adjust failing scenario test expectations
+5. Test with various terrain layouts
+
+**Files Modified:**
+- `server/main.go:158-168` - FormationGroup struct
+- `server/main.go:243-255` - Added formations map to GameServer
+- `server/main.go:405` - Call tickFormations() in game loop
+- `server/main.go:752-837` - tickFormations() implementation
+- `server/main.go:1458-1533` - handleMoveCommand creates formations
+
+**Test Results:**
+- 16/17 tests passing
+- All 15 unit tests pass
+- 1/2 scenario tests pass (formation_around_cluster fails - units don't reach expected positions)
+
 ---
 
 ## Recently Completed
 
-### Formation Positioning Fix ✅
+### Formation Movement Fix + Test Overhaul ✅ (2025-10-14 Evening)
+- ✅ **Fixed friendly unit collision** - Teammates pass through each other (enemies still block)
+  - **Bug**: Units in same formation blocked each other → leader got stuck
+  - **Fix**: `main.go:690-693` - Skip collision check for same `OwnerId`
+- ✅ **Fixed formation disbanding** - Formations now properly detect when all units arrive
+  - **Bug**: Formation stored adjusted click target instead of leader's actual destination
+  - **Fix**: `main.go:1586-1598` - Use `formationPositions[0]` as formation target
+- ✅ **Test framework overhaul** - Tests now catch broken behavior
+  - Reverted weakened expectations (tolerance 10→4, maxTicks 300→150, allStopped false→true)
+  - Added `TestAllUnitsReceivePaths` - Verifies ALL units get paths AND move (catches stuck units)
+  - Debug logging added (commented out for performance)
+- ✅ **18/18 tests passing** - No more false confidence from weak tests
+- ✅ **No bouncing, no speed issues** - All units move smoothly to formation positions
+
+### Formation Positioning Fix ✅ (2025-10-14 Morning)
 - ✅ **Closest unit becomes tip** - Units sorted by distance to click point
 - ✅ **Line extends backward** - Position[0] at click, rest extend toward origin
 - ✅ **Box tip at click** - Position[0] at click point, grid extends backward
 - ✅ **Age of Empires II behavior** - Matches expected RTS formation positioning
 - ✅ New test: TestLineFormationBackwardExtension (2 scenarios)
-- ✅ All 17 tests passing
 
 ### Formation Orientation Refactor ✅
 - ✅ Direction-based formation orientation (8 compass directions)
@@ -356,13 +420,14 @@ realtime-game-engine/
 ## Next Steps
 
 ### High Priority
-- [ ] **Formation Movement** - Units maintain formation shape while traveling (not just at destination)
-  - Leader-follower system: tip unit pathfinds, others maintain offset
-  - Formation breaks on obstacles, units pathfind independently
+- [ ] **Advanced Formation Movement** (Optional Enhancement)
+  - Current: Units pathfind independently to final positions (works well)
+  - Enhancement: Maintain formation shape DURING travel (leader-follower with offsets)
+  - Formation breaks on obstacles, reforms after passing
   - Speed synchronization (leader waits for stragglers)
-  - Age of Empires II-style cohesive group movement
-  - See: `.claude/docs/FORMATION_MOVEMENT_PLAN.md`
-  - Estimated: 2-3 days
+  - See: `.claude/docs/FORMATION_MOVEMENT_PLAN.md` for detailed plan
+  - Estimated: 1-2 days (Stages 3-5)
+  - **Note**: Current implementation is acceptable - this is polish, not critical
 
 ### Potential Features
 - [ ] Win conditions (resource threshold, building destruction, etc.)

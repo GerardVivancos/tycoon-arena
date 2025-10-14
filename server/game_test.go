@@ -605,7 +605,8 @@ func TestLineFormationOriented(t *testing.T) {
 
 			// Verify line is linear along expected axis
 			if tt.expectLinear {
-				if tt.checkAxis == "X" {
+				switch tt.checkAxis {
+				case "X":
 					// All X values should be the same (vertical line)
 					firstX := positions[0].X
 					for i, pos := range positions {
@@ -613,7 +614,7 @@ func TestLineFormationOriented(t *testing.T) {
 							t.Errorf("Position %d has X=%d, expected X=%d (vertical line)", i, pos.X, firstX)
 						}
 					}
-				} else if tt.checkAxis == "Y" {
+				case "Y":
 					// All Y values should be the same (horizontal line)
 					firstY := positions[0].Y
 					for i, pos := range positions {
@@ -769,6 +770,140 @@ func TestLineFormationBackwardExtension(t *testing.T) {
 	}
 
 	t.Logf("Scenario 2: Moving east, line extends west from (15,10): %v", positions)
+}
+
+// TestAllUnitsReceivePaths verifies that every unit in a formation gets a path
+func TestAllUnitsReceivePaths(t *testing.T) {
+	mapData := &MapData{
+		Width:          40,
+		Height:         40,
+		TileSize:       32,
+		DefaultTerrain: TerrainType{Type: "grass", Passable: true},
+		Tiles:          map[TileCoord]TerrainType{},
+		Features:       []Feature{},
+		SpawnPoints:    []SpawnPoint{},
+	}
+
+	server := &GameServer{
+		mapData:         mapData,
+		entities:        make(map[uint32]*Entity),
+		formations:      make(map[uint32]*FormationGroup),
+		clients:         make(map[uint32]*Client),
+		nextId:          1,
+		nextFormationID: 1,
+		tick:            0,
+	}
+
+	// Create test client
+	testClient := &Client{
+		Id:    1,
+		Name:  "TestPlayer",
+		Money: 1000,
+	}
+	server.clients[1] = testClient
+
+	// Create 5 units spread out
+	unitPositions := [][2]int{
+		{5, 5}, // Unit 1
+		{6, 5}, // Unit 2
+		{7, 5}, // Unit 3
+		{8, 5}, // Unit 4
+		{9, 5}, // Unit 5 (farthest from target)
+	}
+
+	unitIds := []uint32{}
+	for _, pos := range unitPositions {
+		unitId := server.nextId
+		server.nextId++
+		entity := &Entity{
+			Id:      unitId,
+			OwnerId: 1,
+			Type:    "worker",
+			TileX:   pos[0],
+			TileY:   pos[1],
+		}
+		server.entities[unitId] = entity
+		unitIds = append(unitIds, unitId)
+		t.Logf("Created unit %d at (%d,%d)", unitId, pos[0], pos[1])
+	}
+
+	// Issue formation move command to distant location
+	targetX, targetY := 30, 30
+	cmd := Command{
+		Type: "move",
+		Data: map[string]interface{}{
+			"unitIds":     convertToInterfaceSlice(unitIds),
+			"targetTileX": float64(targetX),
+			"targetTileY": float64(targetY),
+			"formation":   "box",
+		},
+	}
+
+	server.handleMoveCommand(cmd, testClient)
+
+	// Check: ALL units should have non-nil paths
+	unitsWithoutPaths := []uint32{}
+	for i, unitId := range unitIds {
+		entity := server.entities[unitId]
+		if len(entity.Path) == 0 {
+			unitsWithoutPaths = append(unitsWithoutPaths, unitId)
+			t.Errorf("Unit %d (index %d) at (%d,%d) has NO PATH!",
+				unitId, i, entity.TileX, entity.TileY)
+		} else {
+			t.Logf("✓ Unit %d (index %d) has path with %d waypoints",
+				unitId, i, len(entity.Path))
+		}
+	}
+
+	if len(unitsWithoutPaths) > 0 {
+		t.Fatalf("%d units failed to receive paths: %v", len(unitsWithoutPaths), unitsWithoutPaths)
+	}
+
+	// Simulate 20 ticks and verify ALL units have moved
+	initialPositions := make(map[uint32][2]int)
+	for _, unitId := range unitIds {
+		entity := server.entities[unitId]
+		initialPositions[unitId] = [2]int{entity.TileX, entity.TileY}
+	}
+
+	deltaTime := 1.0 / float32(20) // 20Hz tick rate
+	for tick := 0; tick < 20; tick++ {
+		server.tickFormations()
+		for _, entity := range server.entities {
+			if entity.Type == "worker" {
+				server.updateEntityMovement(entity, deltaTime)
+			}
+		}
+		server.tick++
+	}
+
+	// Check: ALL units should have moved from initial position
+	unmovedUnits := []uint32{}
+	for i, unitId := range unitIds {
+		entity := server.entities[unitId]
+		initialPos := initialPositions[unitId]
+		if entity.TileX == initialPos[0] && entity.TileY == initialPos[1] {
+			unmovedUnits = append(unmovedUnits, unitId)
+			t.Errorf("Unit %d (index %d) did NOT MOVE! Still at (%d,%d)",
+				unitId, i, entity.TileX, entity.TileY)
+		} else {
+			t.Logf("✓ Unit %d (index %d) moved from (%d,%d) to (%d,%d)",
+				unitId, i, initialPos[0], initialPos[1], entity.TileX, entity.TileY)
+		}
+	}
+
+	if len(unmovedUnits) > 0 {
+		t.Fatalf("%d units did not move after 20 ticks: %v", len(unmovedUnits), unmovedUnits)
+	}
+}
+
+// Helper to convert uint32 slice to interface{} slice for command data
+func convertToInterfaceSlice(ids []uint32) []interface{} {
+	result := make([]interface{}, len(ids))
+	for i, id := range ids {
+		result[i] = float64(id) // JSON uses float64 for numbers
+	}
+	return result
 }
 
 // Helper function
