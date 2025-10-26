@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"net"
+	"sort"
+	"sync"
 	"time"
 )
 
@@ -30,17 +31,27 @@ type HelloMessage struct {
 	PlayerName    string `json:"playerName"`
 }
 
-type WelcomeMessage struct {
-	ClientId          uint32 `json:"clientId"`
-	TickRate          int    `json:"tickRate"`
-	HeartbeatInterval int    `json:"heartbeatInterval"`
+type TerrainTile struct {
+	X      int     `json:"x"`
+	Y      int     `json:"y"`
+	Type   string  `json:"type"`
+	Height float32 `json:"height"`
 }
 
-type InputMessage struct {
-	Tick     uint64    `json:"tick"`
-	ClientId uint32    `json:"clientId"`
-	Sequence uint32    `json:"sequence"`
-	Commands []Command `json:"commands"`
+type TerrainData struct {
+	DefaultType string        `json:"defaultType"`
+	Tiles       []TerrainTile `json:"tiles"`
+}
+
+type WelcomeMessage struct {
+	ClientId          uint32      `json:"clientId"`
+	TickRate          int         `json:"tickRate"`
+	HeartbeatInterval int         `json:"heartbeatInterval"`
+	InputRedundancy   int         `json:"inputRedundancy"`
+	TileSize          int         `json:"tileSize"`
+	ArenaTilesWidth   int         `json:"arenaTilesWidth"`
+	ArenaTilesHeight  int         `json:"arenaTilesHeight"`
+	TerrainData       TerrainData `json:"terrainData"`
 }
 
 type Command struct {
@@ -48,183 +59,280 @@ type Command struct {
 	Data interface{} `json:"data"`
 }
 
-type MoveCommand struct {
-	X float32 `json:"x"`
-	Y float32 `json:"y"`
+type CommandFrame struct {
+	Sequence uint32    `json:"sequence"`
+	Tick     uint64    `json:"tick"`
+	Commands []Command `json:"commands"`
+}
+
+type InputPayload struct {
+	ClientId uint32         `json:"clientId"`
+	Commands []CommandFrame `json:"commands"`
+}
+
+type SnapshotEntity struct {
+	Id              uint32  `json:"id"`
+	OwnerId         uint32  `json:"ownerId"`
+	Type            string  `json:"type"`
+	TileX           int     `json:"tileX"`
+	TileY           int     `json:"tileY"`
+	TargetTileX     int     `json:"targetTileX"`
+	TargetTileY     int     `json:"targetTileY"`
+	MoveProgress    float32 `json:"moveProgress"`
+	FootprintWidth  int     `json:"footprintWidth"`
+	FootprintHeight int     `json:"footprintHeight"`
+	Health          int32   `json:"health"`
+	MaxHealth       int32   `json:"maxHealth"`
 }
 
 type SnapshotMessage struct {
-	Tick     uint64   `json:"tick"`
-	Entities []Entity `json:"entities"`
+	Tick         uint64           `json:"tick"`
+	BaselineTick uint64           `json:"baselineTick"`
+	Entities     []SnapshotEntity `json:"entities"`
 }
 
-type Entity struct {
-	Id        uint32  `json:"id"`
-	OwnerId   uint32  `json:"ownerId"`
-	Type      string  `json:"type"`
-	X         float32 `json:"x"`
-	Y         float32 `json:"y"`
-	Health    int32   `json:"health"`
-	MaxHealth int32   `json:"maxHealth"`
+type tileTarget struct {
+	X int
+	Y int
+}
+
+func clamp(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func buildTargets(width, height int) []tileTarget {
+	if width <= 0 || height <= 0 {
+		return []tileTarget{{X: 0, Y: 0}}
+	}
+	centerX := clamp(width/2, 0, width-1)
+	centerY := clamp(height/2, 0, height-1)
+	offsets := [][2]int{{3, 0}, {0, 3}, {-3, 0}, {0, -3}}
+	targets := make([]tileTarget, 0, len(offsets))
+	for _, offset := range offsets {
+		targets = append(targets, tileTarget{
+			X: clamp(centerX+offset[0], 0, width-1),
+			Y: clamp(centerY+offset[1], 0, height-1),
+		})
+	}
+	return targets
 }
 
 func main() {
-	// Connect to server
 	conn, err := net.Dial("udp", "localhost:8080")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("failed to dial server: %v", err)
 	}
 	defer conn.Close()
 
-	// Send hello message
 	hello := HelloMessage{
 		ClientVersion: "1.0",
-		PlayerName:    "TestPlayer",
+		PlayerName:    "TestClient",
 	}
-
-	helloData, _ := json.Marshal(hello)
-	helloMsg := Message{
-		Type: MsgHello,
-		Data: json.RawMessage(helloData),
+	helloBytes, _ := json.Marshal(hello)
+	if err := sendMessage(conn, MsgHello, helloBytes); err != nil {
+		log.Fatalf("failed to send hello: %v", err)
 	}
-
-	msgBytes, _ := json.Marshal(helloMsg)
-	conn.Write(msgBytes)
-
 	fmt.Println("Sent hello message")
 
-	// Listen for response
-	buffer := make([]byte, 1024)
+	buffer := make([]byte, 4096)
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-
 	n, err := conn.Read(buffer)
 	if err != nil {
-		log.Printf("Error reading response: %v", err)
-		return
+		log.Fatalf("failed to read welcome: %v", err)
 	}
 
-	var response Message
-	if err := json.Unmarshal(buffer[:n], &response); err != nil {
-		log.Printf("Error unmarshaling response: %v", err)
-		return
+	var envelope Message
+	if err := json.Unmarshal(buffer[:n], &envelope); err != nil {
+		log.Fatalf("failed to parse welcome envelope: %v", err)
+	}
+	if envelope.Type != MsgWelcome {
+		log.Fatalf("expected welcome message, got %s", envelope.Type)
 	}
 
-	if response.Type == MsgWelcome {
-		var welcome WelcomeMessage
-		json.Unmarshal(response.Data, &welcome)
-		fmt.Printf("Received welcome! ClientId: %d, TickRate: %d, Heartbeat: %dms\n",
-			welcome.ClientId, welcome.TickRate, welcome.HeartbeatInterval)
+	var welcome WelcomeMessage
+	if err := json.Unmarshal(envelope.Data, &welcome); err != nil {
+		log.Fatalf("failed to parse welcome payload: %v", err)
+	}
 
-		heartbeatInterval := time.Duration(welcome.HeartbeatInterval) * time.Millisecond
+	fmt.Printf("Received welcome! ClientId: %d, TickRate: %dHz, Heartbeat: %dms\n",
+		welcome.ClientId, welcome.TickRate, welcome.HeartbeatInterval)
+	fmt.Printf("Map: %dx%d tiles (size %d)\n", welcome.ArenaTilesWidth, welcome.ArenaTilesHeight, welcome.TileSize)
+	fmt.Printf("Terrain tiles received: %d\n", len(welcome.TerrainData.Tiles))
 
-		// Start heartbeat goroutine
-		stopHeartbeat := make(chan bool)
-		go func() {
-			ticker := time.NewTicker(heartbeatInterval)
-			defer ticker.Stop()
+	inputRedundancy := welcome.InputRedundancy
+	if inputRedundancy <= 0 {
+		inputRedundancy = 3
+	}
 
-			for {
-				select {
-				case <-ticker.C:
-					pingMsg := Message{
-						Type: MsgPing,
-						Data: json.RawMessage("{}"),
-					}
-					pingBytes, _ := json.Marshal(pingMsg)
-					conn.Write(pingBytes)
+	var (
+		currentTick    uint64
+		tickMu         sync.RWMutex
+		ownedUnits     []uint32
+		ownedUnitsMu   sync.RWMutex
+		commandHistory []CommandFrame
+		commandMu      sync.Mutex
+	)
+
+	stopHeartbeat := make(chan struct{})
+	go func(interval int) {
+		ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := sendMessage(conn, MsgPing, []byte(`{}`)); err != nil {
+					log.Printf("failed to send ping: %v", err)
+				} else {
 					fmt.Println("Sent ping")
-				case <-stopHeartbeat:
-					return
 				}
+			case <-stopHeartbeat:
+				return
 			}
-		}()
-		defer close(stopHeartbeat)
+		}
+	}(welcome.HeartbeatInterval)
 
-		// Start movement input goroutine
-		var sequence uint32 = 0
-		stopMovement := make(chan bool)
-		go func() {
-			ticker := time.NewTicker(100 * time.Millisecond)
-			defer ticker.Stop()
-			angle := 0.0
-
-			for {
-				select {
-				case <-ticker.C:
-					sequence++
-					angle += 0.2
-
-					// Move in a circular pattern
-					deltaX := float32(3.0 * math.Cos(angle))
-					deltaY := float32(3.0 * math.Sin(angle))
-
-					moveCmd := Command{
-						Type: "move",
-						Data: map[string]float32{"deltaX": deltaX, "deltaY": deltaY},
-					}
-
-					inputMsg := InputMessage{
-						Tick:     uint64(sequence),
-						ClientId: welcome.ClientId,
-						Sequence: sequence,
-						Commands: []Command{moveCmd},
-					}
-
-					inputData, _ := json.Marshal(inputMsg)
-					input := Message{
-						Type: MsgInput,
-						Data: json.RawMessage(inputData),
-					}
-
-					inputBytes, _ := json.Marshal(input)
-					conn.Write(inputBytes)
-				case <-stopMovement:
-					return
-				}
-			}
-		}()
-		defer close(stopMovement)
-
-		fmt.Println("Sending continuous movement commands (circular pattern)...")
-
-		// Listen for snapshots and pongs
-		timeout := time.After(10 * time.Second)
-		snapshotCount := 0
-		pongCount := 0
+	targets := buildTargets(welcome.ArenaTilesWidth, welcome.ArenaTilesHeight)
+	stopMovement := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		var sequence uint32
+		targetIndex := 0
 
 		for {
 			select {
-			case <-timeout:
-				fmt.Printf("\nTest complete! Received %d snapshots and %d pongs\n", snapshotCount, pongCount)
-				return
-			default:
-				conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-				n, err := conn.Read(buffer)
-				if err != nil {
-					continue // Timeout is expected
-				}
-
-				var msg Message
-				if err := json.Unmarshal(buffer[:n], &msg); err != nil {
+			case <-ticker.C:
+				ownedUnitsMu.RLock()
+				if len(ownedUnits) == 0 {
+					ownedUnitsMu.RUnlock()
 					continue
 				}
+				unitIDs := append([]uint32(nil), ownedUnits...)
+				ownedUnitsMu.RUnlock()
 
-				switch msg.Type {
-				case MsgSnapshot:
-					var snapshot SnapshotMessage
-					json.Unmarshal(msg.Data, &snapshot)
-					snapshotCount++
-					fmt.Printf("Snapshot tick %d: %d entities\n", snapshot.Tick, len(snapshot.Entities))
-					for _, entity := range snapshot.Entities {
-						fmt.Printf("  Entity %d: %s at (%.1f, %.1f)\n", entity.Id, entity.Type, entity.X, entity.Y)
-					}
-				case MsgPong:
-					pongCount++
-					fmt.Print(".")
+				tickMu.RLock()
+				tick := currentTick
+				tickMu.RUnlock()
+
+				target := targets[targetIndex]
+				targetIndex = (targetIndex + 1) % len(targets)
+
+				sequence++
+				frame := CommandFrame{
+					Sequence: sequence,
+					Tick:     tick,
+					Commands: []Command{
+						{
+							Type: "move",
+							Data: map[string]interface{}{
+								"unitIds":     unitIDs,
+								"targetTileX": target.X,
+								"targetTileY": target.Y,
+								"formation":   "box",
+							},
+						},
+					},
 				}
+
+				commandMu.Lock()
+				commandHistory = append(commandHistory, frame)
+				if len(commandHistory) > inputRedundancy {
+					commandHistory = commandHistory[len(commandHistory)-inputRedundancy:]
+				}
+				payload := InputPayload{
+					ClientId: welcome.ClientId,
+					Commands: append([]CommandFrame(nil), commandHistory...),
+				}
+				commandMu.Unlock()
+
+				payloadBytes, _ := json.Marshal(payload)
+				if err := sendMessage(conn, MsgInput, payloadBytes); err != nil {
+					log.Printf("failed to send move command: %v", err)
+				} else {
+					fmt.Printf("Sent move command to (%d,%d) for %d unit(s)\n", target.X, target.Y, len(unitIDs))
+				}
+			case <-stopMovement:
+				return
+			}
+		}
+	}()
+
+	timeout := time.After(10 * time.Second)
+	snapshotCount := 0
+	pongCount := 0
+
+	for {
+		select {
+		case <-timeout:
+			close(stopMovement)
+			close(stopHeartbeat)
+			fmt.Printf("\nTest complete! Received %d snapshots and %d pongs\n", snapshotCount, pongCount)
+			return
+		default:
+			conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+			n, err := conn.Read(buffer)
+			if err != nil {
+				continue
+			}
+
+			var msg Message
+			if err := json.Unmarshal(buffer[:n], &msg); err != nil {
+				continue
+			}
+
+			switch msg.Type {
+			case MsgSnapshot:
+				var snapshot SnapshotMessage
+				if err := json.Unmarshal(msg.Data, &snapshot); err != nil {
+					log.Printf("failed to parse snapshot: %v", err)
+					continue
+				}
+				tickMu.Lock()
+				currentTick = snapshot.Tick
+				tickMu.Unlock()
+
+				snapshotCount++
+				fmt.Printf("Snapshot tick %d: %d entities\n", snapshot.Tick, len(snapshot.Entities))
+
+				var unitCandidates []uint32
+				for _, entity := range snapshot.Entities {
+					if entity.OwnerId == welcome.ClientId && entity.Type == "worker" {
+						unitCandidates = append(unitCandidates, entity.Id)
+					}
+					fmt.Printf("  Entity %d (%s) owner %d tile (%d,%d) → (%d,%d)\n",
+						entity.Id, entity.Type, entity.OwnerId,
+						entity.TileX, entity.TileY, entity.TargetTileX, entity.TargetTileY)
+				}
+
+				if len(unitCandidates) > 0 {
+					sort.Slice(unitCandidates, func(i, j int) bool { return unitCandidates[i] < unitCandidates[j] })
+					ownedUnitsMu.Lock()
+					ownedUnits = unitCandidates
+					ownedUnitsMu.Unlock()
+				}
+			case MsgPong:
+				pongCount++
+				fmt.Print(".")
 			}
 		}
 	}
+}
 
-	fmt.Println("Test complete!")
+func sendMessage(conn net.Conn, msgType MessageType, payload []byte) error {
+	envelope := Message{
+		Type: msgType,
+		Data: json.RawMessage(payload),
+	}
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	_, err = conn.Write(data)
+	return err
 }

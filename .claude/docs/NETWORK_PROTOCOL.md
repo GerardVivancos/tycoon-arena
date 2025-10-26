@@ -86,8 +86,15 @@ Client                          Server
     "heartbeatInterval": 2000,
     "inputRedundancy": 3,
     "tileSize": 32,
-    "arenaTilesWidth": 25,
-    "arenaTilesHeight": 18
+    "arenaTilesWidth": 40,
+    "arenaTilesHeight": 30,
+    "terrainData": {
+      "defaultType": "grass",
+      "tiles": [
+        {"x": 15, "y": 10, "type": "rock", "height": 2},
+        {"x": 16, "y": 10, "type": "rock", "height": 2}
+      ]
+    }
   }
 }
 ```
@@ -97,9 +104,10 @@ Client                          Server
 - `tickRate` - server simulation rate (Hz)
 - `heartbeatInterval` - milliseconds between ping messages
 - `inputRedundancy` - how many commands to send per input message (N)
-- `tileSize` - pixels per tile (Sprint 3+)
-- `arenaTilesWidth` - map width in tiles (Sprint 3+)
-- `arenaTilesHeight` - map height in tiles (Sprint 3+)
+- `tileSize` - pixels per tile (from map data)
+- `arenaTilesWidth` - map width in tiles (from map data)
+- `arenaTilesHeight` - map height in tiles (from map data)
+- `terrainData` - default terrain type plus sparse list of non-default tiles for rendering
 
 ### 3. Input (Client → Server)
 
@@ -115,22 +123,59 @@ Client                          Server
         "sequence": 98,
         "tick": 1950,
         "commands": [
-          {"type": "move", "data": {"deltaX": 5.0, "deltaY": 0.0}}
+          {
+            "type": "move",
+            "data": {
+              "unitIds": [10, 11, 12],
+              "targetTileX": 18,
+              "targetTileY": 12,
+              "formation": "line"
+            }
+          }
         ]
       },
       {
         "sequence": 99,
         "tick": 1970,
         "commands": [
-          {"type": "move", "data": {"deltaX": 5.0, "deltaY": 0.0}}
+          {
+            "type": "move",
+            "data": {
+              "unitIds": [10, 11, 12],
+              "targetTileX": 19,
+              "targetTileY": 12,
+              "formation": "line"
+            }
+          }
         ]
       },
       {
         "sequence": 100,
         "tick": 1990,
         "commands": [
-          {"type": "move", "data": {"deltaX": 5.0, "deltaY": 0.0}},
-          {"type": "build", "data": {"buildingType": "generator", "x": 200, "y": 150}}
+          {
+            "type": "move",
+            "data": {
+              "unitIds": [10, 11, 12],
+              "targetTileX": 20,
+              "targetTileY": 12,
+              "formation": "line"
+            }
+          },
+          {
+            "type": "build",
+            "data": {
+              "buildingType": "generator",
+              "tileX": 25,
+              "tileY": 14
+            }
+          },
+          {
+            "type": "attack",
+            "data": {
+              "targetId": 7
+            }
+          }
         ]
       }
     ]
@@ -462,11 +507,12 @@ type Client struct {
 | InputRedundancy | 3 | Commands per input message |
 | ClientTimeout | 10 sec | Disconnect if no ping/input |
 | HeartbeatInterval | 2 sec | Ping frequency |
-| ArenaWidth | 800 | Map width |
-| ArenaHeight | 600 | Map height |
-| PlayerSpeed | 200 units/sec | Movement speed |
+| MapWidthTiles | 40 (default) | Map width provided by JSON/welcome payload |
+| MapHeightTiles | 30 (default) | Map height provided by JSON/welcome payload |
+| TileSize | 32 | World units per tile (from map JSON) |
+| PlayerSpeed | 4 tiles/sec | Unit movement speed |
 | BuildingCost | 50 | Generator cost |
-| BuildingSize | 40x40 | Generator dimensions |
+| BuildingSize | 2×2 tiles | Generator footprint |
 | GeneratorIncome | 10/sec | Money generation rate |
 | AttackDamage | 25 | Damage per attack |
 

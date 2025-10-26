@@ -23,13 +23,13 @@
 - ✅ Client-side prediction and interpolation
 - ✅ 40×30 tile maps with terrain (grass, rocks, obstacles)
 - ✅ Camera zoom (0.5× to 2.0×) and pan (WASD/arrows/trackpad)
-- ✅ **Comprehensive test suite** - 18/18 tests passing
-  - 15 unit tests (pathfinding, formations, terrain, collisions)
-  - 2 scenario tests (declarative JSON → automated execution)
-  - 1 comprehensive formation test (ALL units move verification)
+- ✅ **Comprehensive test suite** - 16 unit tests + scenario harness passing
+  - 16 unit tests (pathfinding, formations, terrain, collisions)
+  - Scenario harness runs 2 declarative JSON scenarios end-to-end
+  - `TestAllUnitsReceivePaths` ensures every unit in formation gets a path
 - ✅ **Strict test expectations** - Tests properly catch broken behavior
 
-**Current Map:** 40×30 tiles with 7 rock obstacles
+**Current Map:** Default JSON map `maps/default.json` (40×30 tiles, 7 rock obstacles)
 **Testing:** Full declarative test framework (Phase 1 & 2 complete)
 **Next Feature:** Win conditions, more unit types, or visual scenario editor
 
@@ -76,7 +76,7 @@ cd server && go run main.go
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        Go Server                             │
-│  - Tile-based game logic (25×18 tiles, 32px each)          │
+│  - Tile-based game logic (JSON-driven, default 40×30 tiles)│
 │  - Formation calculation (Box, Line, Spread)                │
 │  - Movement validation & bounds checking                     │
 │  - Building placement & collision detection                  │
@@ -115,7 +115,7 @@ cd server && go run main.go
 - **Projection**: Square tiles → diamond grid
 - **Constants**: ISO_TILE_WIDTH=64, ISO_TILE_HEIGHT=32
 - **Functions**: `tile_to_iso()`, `iso_to_tile()`
-- **Visuals**: 3D-style buildings, units with shadows, terrain tiles
+- **Visuals**: 3D-style buildings, units with shadows, terrain tiles (dimensions from server welcome payload)
 
 ### 4. Building System ✅
 - **Generator**: Costs $50, produces $10/sec
@@ -341,19 +341,16 @@ realtime-game-engine/
 5. Each tick, followers attempt to maintain offset from leader's current position
 6. Formation disbands when leader arrives
 
-**Current Issues:**
-- ⚠️ **Follower movement too simple** - One-tile-per-tick toward offset position
-- ⚠️ **No follower pathfinding** - Followers can't navigate around obstacles
-- ⚠️ **Followers lag on complex terrain** - Get stuck when direct path blocked
-- ⚠️ **1 scenario test failing** - `formation_around_cluster` needs adjustment
-- ⚠️ **No formation breaking logic** - Formation doesn't break when blocked
+**Polish Opportunities:**
+- ✳️ **Follower movement smoothing** - Could adopt leader/follower offsets for in-transit cohesion
+- ✳️ **Adaptive follower pathfinding** - Followers currently recompute individually when blocked
+- ✳️ **Formation breaking rules** - Optional logic for reforming after obstacle detours
 
-**Next Steps to Complete:**
-1. Add follower pathfinding when direct path blocked
-2. Implement formation breaking when followers can't keep up
-3. Add speed synchronization (leader waits for stragglers)
-4. Adjust failing scenario test expectations
-5. Test with various terrain layouts
+**Next Enhancements (Optional):**
+1. Add shared path planning for followers in tight spaces
+2. Implement formation breaking when followers can't keep pace
+3. Synchronize speeds so leaders wait for stragglers
+4. Expand scenario coverage with dense obstacle layouts
 
 **Files Modified:**
 - `server/main.go:158-168` - FormationGroup struct
@@ -363,9 +360,8 @@ realtime-game-engine/
 - `server/main.go:1458-1533` - handleMoveCommand creates formations
 
 **Test Results:**
-- 16/17 tests passing
-- All 15 unit tests pass
-- 1/2 scenario tests pass (formation_around_cluster fails - units don't reach expected positions)
+- All 16 unit tests passing
+- Scenario harness passes `navigate_around_rock` and `formation_around_cluster`
 
 ---
 
@@ -382,7 +378,7 @@ realtime-game-engine/
   - Reverted weakened expectations (tolerance 10→4, maxTicks 300→150, allStopped false→true)
   - Added `TestAllUnitsReceivePaths` - Verifies ALL units get paths AND move (catches stuck units)
   - Debug logging added (commented out for performance)
-- ✅ **18/18 tests passing** - No more false confidence from weak tests
+- ✅ **All automated tests passing** (16 unit + 2 scenario subtests)
 - ✅ **No bouncing, no speed issues** - All units move smoothly to formation positions
 
 ### Formation Positioning Fix ✅ (2025-10-14 Morning)

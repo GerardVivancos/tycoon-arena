@@ -23,7 +23,7 @@ go test -v -run TestAllScenarios/navigate_around_rock
 
 ## Test Coverage
 
-### Unit Tests (10 tests)
+### Unit Tests (16 tests)
 
 **Pathfinding:**
 - `TestPathfindingAroundSingleRock` - Routes around 1 obstacle
@@ -37,9 +37,15 @@ go test -v -run TestAllScenarios/navigate_around_rock
 - `TestRockBlocksBuilding` - Building placement on rock fails
 - `TestTerrainPassability` - Direct isTilePassable tests
 
-**Game Mechanics:**
+**Formations & Movement:**
 - `TestFormationCalculation` - Formation positioning
 - `TestUnitCollisionDetection` - Unit occupancy checks
+- `TestCentroidCalculation` - Centroid math for oriented formations
+- `TestDirectionCalculation` - Direction vector + orientation
+- `TestBoxFormationOriented` - Box formation respects movement direction
+- `TestLineFormationOriented` - Line formation extends opposite movement
+- `TestLineFormationBackwardExtension` - Line extends from click point
+- `TestAllUnitsReceivePaths` - Every unit in formation gets a path
 
 ### Scenario Tests (2 tests)
 
@@ -63,11 +69,15 @@ go test -v
 === RUN   TestPathfindingAroundSingleRock
 --- PASS: TestPathfindingAroundSingleRock (0.00s)
 ...
+=== RUN   TestAllUnitsReceivePaths
+--- PASS: TestAllUnitsReceivePaths (0.00s)
 === RUN   TestAllScenarios
 === RUN   TestAllScenarios/navigate_around_rock
 --- PASS: TestAllScenarios/navigate_around_rock (0.00s)
+=== RUN   TestAllScenarios/formation_around_cluster
+--- PASS: TestAllScenarios/formation_around_cluster (0.00s)
 PASS
-ok      realtime-game-server    0.3s
+ok      realtime-game-server    0.4s
 ```
 
 ### Specific Tests
