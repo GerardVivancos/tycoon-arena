@@ -1,0 +1,60 @@
+{
+  "id": "timed_race",
+  "name": "Timed Race",
+  "description": "Player with the most money when time runs out wins",
+
+  "parameters": {
+    "starting_money": 100,
+    "starting_units": 5,
+    "time_limit_ticks": 12000,
+    "tick_rate": 20
+  },
+
+  "win_conditions": [
+    {
+      "id": "time_limit_reached",
+      "name": "Time Limit Victory",
+      "priority": 1,
+      "rule": {
+        "type": "comparison",
+        "left": {"stat": "match_duration_ticks", "global": true},
+        "operator": ">=",
+        "right": {"param": "time_limit_ticks"}
+      },
+      "winner": "highest_money"
+    }
+  ],
+
+  "lose_conditions": [],
+
+  "periodic_checks": [
+    {
+      "name": "resource_generation",
+      "interval_ticks": 20,
+      "action": {
+        "type": "grant_resources",
+        "amount_per_building": 10,
+        "building_type": "generator"
+      }
+    },
+    {
+      "name": "tick_counter",
+      "interval_ticks": 1,
+      "action": {
+        "type": "increment_global_stat",
+        "stat": "match_duration_ticks",
+        "amount": 1
+      }
+    }
+  ],
+
+  "event_triggers": [],
+
+  "ui": {
+    "objective_text": "Have the most money when time runs out (10 minutes)",
+    "show_timer": true,
+    "show_money": true,
+    "victory_message": "Victory! You had the most resources when time ran out!",
+    "defeat_message": "Defeated! Your opponent had more resources."
+  }
+}

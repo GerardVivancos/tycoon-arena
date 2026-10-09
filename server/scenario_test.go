@@ -209,14 +209,14 @@ func (a *TestGameServerAdapter) MoveUnits(entityIDs []uint32, targetX, targetY i
 		Money: 1000,
 	}
 
-	// Convert unit IDs to interface{} array (as JSON parsing would do)
-	unitIdsInterface := make([]interface{}, len(entityIDs))
+	// Convert unit IDs to any array (as JSON parsing would do)
+	unitIdsInterface := make([]any, len(entityIDs))
 	for i, id := range entityIDs {
 		unitIdsInterface[i] = float64(id) // JSON numbers are float64
 	}
 
 	// Create move command data as map (simulating JSON parsing)
-	moveData := map[string]interface{}{
+	moveData := map[string]any{
 		"unitIds":     unitIdsInterface,
 		"targetTileX": float64(targetX),
 		"targetTileY": float64(targetY),
@@ -245,7 +245,7 @@ func (a *TestGameServerAdapter) AttackTarget(entityIDs []uint32, targetID uint32
 	}
 
 	// Create attack command data as map (simulating JSON parsing)
-	attackData := map[string]interface{}{
+	attackData := map[string]any{
 		"targetId": float64(targetID),
 	}
 

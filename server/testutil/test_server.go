@@ -9,11 +9,11 @@ import (
 
 // TestServer wraps GameServer for in-process testing
 type TestServer struct {
-	server      any // *GameServer from main package
-	tick        uint64
-	nextId      uint32
-	clients     map[uint32]*TestClient
-	mu          sync.Mutex
+	server  any // *GameServer from main package
+	tick    uint64
+	nextId  uint32
+	clients map[uint32]*TestClient
+	mu      sync.Mutex
 }
 
 // NewTestServer creates a test server with specified map
@@ -159,11 +159,11 @@ func (tc *TestClient) GetID() uint32 {
 
 // Placeholder types (will be replaced with imports from main package)
 type Entity struct {
-	Id      uint32
-	TileX   int
-	TileY   int
-	Path    []TilePosition
-	PathIndex int
+	Id           uint32
+	TileX        int
+	TileY        int
+	Path         []TilePosition
+	PathIndex    int
 	MoveProgress float32
 }
 

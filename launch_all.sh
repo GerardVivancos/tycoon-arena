@@ -45,7 +45,7 @@ echo ""
 echo -e "${YELLOW}[STARTUP]${NC} Starting server..."
 (
     cd "$SERVER_DIR"
-    go run main.go 2>&1 | while IFS= read -r line; do
+    go run . 2>&1 | while IFS= read -r line; do
         echo -e "${YELLOW}[SERVER]${NC} $line"
     done
 ) &

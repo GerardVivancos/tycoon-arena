@@ -831,7 +831,7 @@ func TestAllUnitsReceivePaths(t *testing.T) {
 	targetX, targetY := 30, 30
 	cmd := Command{
 		Type: "move",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"unitIds":     convertToInterfaceSlice(unitIds),
 			"targetTileX": float64(targetX),
 			"targetTileY": float64(targetY),
@@ -897,9 +897,9 @@ func TestAllUnitsReceivePaths(t *testing.T) {
 	}
 }
 
-// Helper to convert uint32 slice to interface{} slice for command data
-func convertToInterfaceSlice(ids []uint32) []interface{} {
-	result := make([]interface{}, len(ids))
+// Helper to convert uint32 slice to any slice for command data
+func convertToInterfaceSlice(ids []uint32) []any {
+	result := make([]any, len(ids))
 	for i, id := range ids {
 		result[i] = float64(id) // JSON uses float64 for numbers
 	}

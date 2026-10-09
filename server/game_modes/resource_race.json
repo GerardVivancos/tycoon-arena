@@ -1,0 +1,72 @@
+{
+  "id": "resource_race",
+  "name": "Resource Race",
+  "description": "First player to reach the target amount of money wins",
+
+  "parameters": {
+    "starting_money": 100,
+    "starting_units": 5,
+    "resource_goal": 500
+  },
+
+  "win_conditions": [
+    {
+      "id": "resource_victory",
+      "name": "Resource Victory",
+      "priority": 1,
+      "rule": {
+        "type": "comparison",
+        "left": {"stat": "money_current", "player": "any"},
+        "operator": ">=",
+        "right": {"param": "resource_goal"}
+      },
+      "winner": "player_who_triggered"
+    }
+  ],
+
+  "lose_conditions": [
+    {
+      "id": "bankruptcy",
+      "name": "Bankrupt",
+      "rule": {
+        "type": "and",
+        "rules": [
+          {
+            "type": "comparison",
+            "left": {"stat": "money_current", "player": "self"},
+            "operator": "<=",
+            "right": {"value": 0}
+          },
+          {
+            "type": "comparison",
+            "left": {"stat": "buildings_placed", "player": "self"},
+            "operator": "==",
+            "right": {"value": 0}
+          }
+        ]
+      }
+    }
+  ],
+
+  "periodic_checks": [
+    {
+      "name": "resource_generation",
+      "interval_ticks": 20,
+      "action": {
+        "type": "grant_resources",
+        "amount_per_building": 10,
+        "building_type": "generator"
+      }
+    }
+  ],
+
+  "event_triggers": [],
+
+  "ui": {
+    "objective_text": "Reach $500 before your opponent",
+    "show_timer": true,
+    "show_money": true,
+    "victory_message": "Victory! You reached the resource goal!",
+    "defeat_message": "Defeated! Your opponent reached the goal first."
+  }
+}

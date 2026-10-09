@@ -8,12 +8,12 @@ import (
 
 // TestScenario represents a complete test scenario defined in JSON
 type TestScenario struct {
-	Name         string                `json:"name"`
-	Map          string                `json:"map"`
-	Description  string                `json:"description"`
-	Setup        ScenarioSetup         `json:"setup"`
-	Actions      []ScenarioAction      `json:"actions"`
-	Expectations ScenarioExpectations  `json:"expectations"`
+	Name         string               `json:"name"`
+	Map          string               `json:"map"`
+	Description  string               `json:"description"`
+	Setup        ScenarioSetup        `json:"setup"`
+	Actions      []ScenarioAction     `json:"actions"`
+	Expectations ScenarioExpectations `json:"expectations"`
 }
 
 // ScenarioSetup defines initial state of the scenario
@@ -26,7 +26,7 @@ type ScenarioSetup struct {
 type ScenarioUnit struct {
 	ID       string `json:"id"`
 	Team     int    `json:"team"`
-	Type     string `json:"type"` // "worker", "player"
+	Type     string `json:"type"`     // "worker", "player"
 	Position [2]int `json:"position"` // [x, y]
 	Label    string `json:"label,omitempty"`
 }
@@ -35,15 +35,15 @@ type ScenarioUnit struct {
 type ScenarioBuilding struct {
 	ID       string `json:"id"`
 	Team     int    `json:"team"`
-	Type     string `json:"type"` // "generator"
+	Type     string `json:"type"`     // "generator"
 	Position [2]int `json:"position"` // [x, y]
 	Label    string `json:"label,omitempty"`
 }
 
 // ScenarioAction defines an action to perform during the scenario
 type ScenarioAction struct {
-	Tick      int      `json:"tick"`      // When to execute
-	Type      string   `json:"type"`      // "move", "build", "attack"
+	Tick      int      `json:"tick"` // When to execute
+	Type      string   `json:"type"` // "move", "build", "attack"
 	UnitIDs   []string `json:"unitIds,omitempty"`
 	Target    [2]int   `json:"target,omitempty"`
 	Formation string   `json:"formation,omitempty"` // "box", "line", "spread"
@@ -57,8 +57,8 @@ type ScenarioAction struct {
 
 // ScenarioExpectations defines what should happen
 type ScenarioExpectations struct {
-	MaxTicks    int          `json:"maxTicks"`    // Maximum ticks to run
-	FinalState  FinalState   `json:"finalState"`  // Expected end state
+	MaxTicks    int          `json:"maxTicks"`   // Maximum ticks to run
+	FinalState  FinalState   `json:"finalState"` // Expected end state
 	Constraints *Constraints `json:"constraints,omitempty"`
 }
 

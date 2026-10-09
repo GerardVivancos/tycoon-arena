@@ -25,7 +25,7 @@ type ActualState struct {
 type ActualUnit struct {
 	ID       string
 	Position [2]int
-	State    string // "stopped" or "moving"
+	State    string   // "stopped" or "moving"
 	Path     [][2]int // Path tiles the unit visited (for pathMustAvoid check)
 }
 

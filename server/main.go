@@ -43,6 +43,10 @@ const (
 	MsgSnapshot MessageType = "snapshot"
 	MsgPing     MessageType = "ping"
 	MsgPong     MessageType = "pong"
+
+	// Game over (server -> client), sent once when the active game mode's
+	// win condition fires and the match is finalized.
+	MsgGameOver MessageType = "game_over"
 )
 
 type Message struct {
@@ -64,6 +68,12 @@ type WelcomeMessage struct {
 	ArenaTilesWidth   int         `json:"arenaTilesWidth"`
 	ArenaTilesHeight  int         `json:"arenaTilesHeight"`
 	TerrainData       TerrainData `json:"terrainData"` // Terrain information for rendering
+
+	// Game mode UI (from the active mode definition)
+	GameModeName  string `json:"gameModeName,omitempty"`
+	ObjectiveText string `json:"objectiveText,omitempty"`
+	ShowTimer     bool   `json:"showTimer"`
+	ShowMoney     bool   `json:"showMoney"`
 }
 
 type TerrainData struct {
@@ -90,8 +100,8 @@ type CommandFrame struct {
 }
 
 type Command struct {
-	Type string      `json:"type"`
-	Data interface{} `json:"data"`
+	Type string `json:"type"`
+	Data any    `json:"data"`
 }
 
 type MoveCommand struct {
@@ -122,6 +132,17 @@ type Player struct {
 	Id    uint32  `json:"id"`
 	Name  string  `json:"name"`
 	Money float32 `json:"money"`
+}
+
+// GameOverMessage is broadcast once when the match ends. winnerId 0 means no
+// determinable winner (e.g. draw or no players left).
+type GameOverMessage struct {
+	WinnerId       uint32 `json:"winnerId"`
+	ConditionId    string `json:"conditionId"`
+	ConditionName  string `json:"conditionName"`
+	ObjectiveText  string `json:"objectiveText"`
+	VictoryMessage string `json:"victoryMessage"`
+	DefeatMessage  string `json:"defeatMessage"`
 }
 
 type Entity struct {
@@ -251,11 +272,19 @@ type GameServer struct {
 	mu              sync.RWMutex
 	inputQueue      []QueuedInput
 	queueMu         sync.Mutex
-	mapData         *MapData // Map configuration
+	mapData         *MapData           // Map configuration
+	eventBus        *EventBus          // Event system for game actions
+	stats           *StatisticsTracker // Statistics tracking
+
+	// Game mode / match state
+	gameMode    GameMode // Active game mode (nil until set; nil = no win conditions)
+	gameModeDef *GameModeDefinition
+	gameOver    bool // Match finalized; inputs rejected, joins rejected
+	winnerId    uint32
 }
 
 func NewGameServer() *GameServer {
-	return &GameServer{
+	s := &GameServer{
 		clients:         make(map[uint32]*Client),
 		entities:        make(map[uint32]*Entity),
 		formations:      make(map[uint32]*FormationGroup),
@@ -263,7 +292,131 @@ func NewGameServer() *GameServer {
 		nextId:          1,
 		nextFormationID: 1,
 		inputQueue:      make([]QueuedInput, 0),
+		eventBus:        NewEventBus(),
+		stats:           NewStatisticsTracker(),
 	}
+
+	// Wire up statistics tracking to events
+	s.setupStatisticsTracking()
+
+	return s
+}
+
+// setGameMode installs the active game mode for this server.
+func (s *GameServer) setGameMode(mode GameMode, def *GameModeDefinition) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gameMode = mode
+	s.gameModeDef = def
+}
+
+// buildMatchContext creates a MatchContext for game-mode lifecycle hooks.
+func (s *GameServer) buildMatchContext() *MatchContext {
+	return &MatchContext{
+		Server:   s,
+		Stats:    s.stats,
+		EventBus: s.eventBus,
+		Mode:     s.gameModeDef,
+		Tick:     s.tick,
+	}
+}
+
+// checkMatchEnd evaluates the active game mode's win conditions and finalizes
+// the match if one is met.
+//
+// IMPORTANT: must be called WITHOUT s.mu held — the rule engine and winner
+// resolution take s.mu internally, and Go RWMutex is not reentrant.
+//
+// NOTE: Lose conditions are intentionally not evaluated in Phase 1 — the rule
+// engine cannot resolve player:"self" per player yet (Phase 2), so
+// self-referencing lose rules would false-positive at tick 1.
+func (s *GameServer) checkMatchEnd() {
+	s.mu.RLock()
+	mode := s.gameMode
+	def := s.gameModeDef
+	gameOver := s.gameOver
+	tick := s.tick
+	s.mu.RUnlock()
+
+	if mode == nil || gameOver {
+		return
+	}
+
+	ctx := &MatchContext{
+		Server:   s,
+		Stats:    s.stats,
+		EventBus: s.eventBus,
+		Mode:     def,
+		Tick:     tick,
+	}
+
+	if result := mode.CheckWinConditions(ctx); result != nil && result.HasWinner {
+		s.endMatch(result)
+	}
+}
+
+// endMatch finalizes the match: marks state, fires lifecycle hooks, emits
+// match.ended, and broadcasts the game_over message. Idempotent.
+func (s *GameServer) endMatch(result *WinResult) {
+	s.mu.Lock()
+	if s.gameOver {
+		s.mu.Unlock()
+		return
+	}
+	s.gameOver = true
+	s.winnerId = result.WinnerID
+	mode := s.gameMode
+	tick := s.tick
+	s.mu.Unlock()
+
+	if mode != nil {
+		ctx := s.buildMatchContext()
+		mode.OnMatchEnding(ctx, result.ConditionID)
+	}
+
+	s.eventBus.Emit(GameEvent{
+		Type:      EventMatchEnded,
+		Timestamp: time.Now(),
+		Tick:      tick,
+		ActorID:   result.WinnerID,
+		Data: map[string]any{
+			"conditionId":   result.ConditionID,
+			"conditionName": result.ConditionName,
+		},
+	})
+
+	if mode != nil {
+		mode.OnMatchEnded(s.buildMatchContext())
+	}
+
+	s.broadcastMessage(Message{
+		Type: MsgGameOver,
+		Data: s.marshalData(s.buildGameOverMessage(result)),
+	})
+
+	log.Printf("Match ended: winner=%d condition=%s (%s) at tick %d",
+		result.WinnerID, result.ConditionID, result.ConditionName, tick)
+}
+
+// buildGameOverMessage assembles the game_over payload using the mode's UI config.
+func (s *GameServer) buildGameOverMessage(result *WinResult) GameOverMessage {
+	msg := GameOverMessage{
+		WinnerId:      result.WinnerID,
+		ConditionId:   result.ConditionID,
+		ConditionName: result.ConditionName,
+	}
+
+	s.mu.RLock()
+	def := s.gameModeDef
+	s.mu.RUnlock()
+
+	if def != nil {
+		msg.ObjectiveText = def.UI.ObjectiveText
+		msg.VictoryMessage = def.UI.VictoryMessage
+		msg.DefeatMessage = def.UI.DefeatMessage
+	}
+
+	return msg
 }
 
 // LoadMap loads a map from a JSON file and returns MapData
@@ -373,6 +526,10 @@ func (s *GameServer) gameTick() {
 
 	// Process all queued inputs in tick order
 	for _, input := range inputs {
+		if s.gameOver {
+			// Match ended this tick — drop remaining queued inputs
+			break
+		}
 		client, exists := s.clients[input.ClientId]
 		if !exists {
 			continue
@@ -408,7 +565,36 @@ func (s *GameServer) gameTick() {
 	for _, entity := range s.entities {
 		if entity.Type == "generator" {
 			if client, ok := s.clients[entity.OwnerId]; ok {
-				client.Money += GeneratorIncome * deltaTime
+				oldMoney := client.Money
+				incomeAmount := GeneratorIncome * deltaTime
+				client.Money += incomeAmount
+
+				// Emit resource generation event
+				s.eventBus.Emit(GameEvent{
+					Type:      EventResourceGenerated,
+					Timestamp: time.Now(),
+					Tick:      s.tick,
+					ActorID:   entity.OwnerId,
+					TargetID:  entity.Id,
+					Data: map[string]any{
+						"amount":       incomeAmount,
+						"buildingType": "generator",
+					},
+				})
+
+				// Emit money changed event
+				s.eventBus.Emit(GameEvent{
+					Type:      EventPlayerMoneyChanged,
+					Timestamp: time.Now(),
+					Tick:      s.tick,
+					ActorID:   entity.OwnerId,
+					Data: map[string]any{
+						"oldMoney": oldMoney,
+						"newMoney": client.Money,
+						"delta":    incomeAmount,
+						"reason":   "resource_generation",
+					},
+				})
 			}
 		}
 	}
@@ -442,6 +628,10 @@ func (s *GameServer) gameTick() {
 		Type: MsgSnapshot,
 		Data: s.marshalData(snapshot),
 	})
+
+	// Evaluate game-mode win conditions outside the state lock (the rule
+	// engine takes s.mu internally; calling it under lock would deadlock).
+	s.checkMatchEnd()
 }
 
 func (s *GameServer) handleMessages() error {
@@ -490,6 +680,11 @@ func (s *GameServer) handleMessage(msg Message, clientAddr *net.UDPAddr) {
 func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.gameOver {
+		log.Printf("Match over, rejecting join from %s", clientAddr.String())
+		return
+	}
 
 	if len(s.clients) >= MaxClients {
 		log.Printf("Server full, rejecting client from %s", clientAddr.String())
@@ -575,6 +770,14 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 		},
 	}
 
+	// Attach active game-mode UI config so the client can show objective/timer
+	if s.gameModeDef != nil {
+		welcome.GameModeName = s.gameModeDef.Name
+		welcome.ObjectiveText = s.gameModeDef.UI.ObjectiveText
+		welcome.ShowTimer = s.gameModeDef.UI.ShowTimer
+		welcome.ShowMoney = s.gameModeDef.UI.ShowMoney
+	}
+
 	s.sendMessage(Message{
 		Type: MsgWelcome,
 		Data: s.marshalData(welcome),
@@ -611,9 +814,10 @@ func (s *GameServer) handlePing(clientAddr *net.UDPAddr) {
 func (s *GameServer) handleInput(input InputMessage, clientAddr *net.UDPAddr) {
 	s.mu.RLock()
 	client, exists := s.clients[input.ClientId]
+	gameOver := s.gameOver
 	s.mu.RUnlock()
 
-	if !exists {
+	if !exists || gameOver {
 		return
 	}
 
@@ -643,6 +847,10 @@ func (s *GameServer) handleInput(input InputMessage, clientAddr *net.UDPAddr) {
 }
 
 func (s *GameServer) processCommand(cmd Command, client *Client) {
+	// NOTE: caller holds s.mu (gameTick) — do not lock here.
+	if s.gameOver {
+		return
+	}
 	switch cmd.Type {
 	case "move":
 		s.handleMoveCommand(cmd, client)
@@ -1429,13 +1637,13 @@ func getPrimaryDirection(dx, dy float64) string {
 }
 
 func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
-	moveData, ok := cmd.Data.(map[string]interface{})
+	moveData, ok := cmd.Data.(map[string]any)
 	if !ok {
 		return
 	}
 
 	// Get unit IDs to move
-	unitIdsInterface, ok := moveData["unitIds"].([]interface{})
+	unitIdsInterface, ok := moveData["unitIds"].([]any)
 	if !ok || len(unitIdsInterface) == 0 {
 		return
 	}
@@ -1791,7 +1999,7 @@ func (s *GameServer) isTileAvailableForUnit(tileX, tileY int, unitId uint32) boo
 }
 
 func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
-	buildData, ok := cmd.Data.(map[string]interface{})
+	buildData, ok := cmd.Data.(map[string]any)
 	if !ok {
 		return
 	}
@@ -1833,7 +2041,22 @@ func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 	}
 
 	// Deduct money and create building
+	oldMoney := client.Money
 	client.Money -= BuildingCost
+
+	// Emit money changed event
+	s.eventBus.Emit(GameEvent{
+		Type:      EventPlayerMoneyChanged,
+		Timestamp: time.Now(),
+		Tick:      s.tick,
+		ActorID:   client.Id,
+		Data: map[string]any{
+			"oldMoney": oldMoney,
+			"newMoney": client.Money,
+			"delta":    -BuildingCost,
+			"reason":   "building_cost",
+		},
+	})
 
 	entityId := s.nextId
 	s.nextId++
@@ -1855,11 +2078,38 @@ func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 
 	s.entities[entityId] = building
 
+	// Emit building placed event
+	s.eventBus.Emit(GameEvent{
+		Type:      EventBuildingPlaced,
+		Timestamp: time.Now(),
+		Tick:      s.tick,
+		ActorID:   client.Id,
+		TargetID:  entityId,
+		Data: map[string]any{
+			"buildingType": buildingType,
+			"tileX":        tileX,
+			"tileY":        tileY,
+		},
+	})
+
+	// Emit entity created event
+	s.eventBus.Emit(GameEvent{
+		Type:      EventEntityCreated,
+		Timestamp: time.Now(),
+		Tick:      s.tick,
+		ActorID:   client.Id,
+		TargetID:  entityId,
+		Data: map[string]any{
+			"entityType": buildingType,
+			"health":     100,
+		},
+	})
+
 	log.Printf("Client %d built %s at tile (%d, %d)", client.Id, buildingType, tileX, tileY)
 }
 
 func (s *GameServer) handleAttackCommand(cmd Command, client *Client) {
-	attackData, ok := cmd.Data.(map[string]interface{})
+	attackData, ok := cmd.Data.(map[string]any)
 	if !ok {
 		return
 	}
@@ -1888,19 +2138,75 @@ func (s *GameServer) handleAttackCommand(cmd Command, client *Client) {
 
 	// Apply damage
 	damage := int32(25)
+	oldHealth := target.Health
 	target.Health -= damage
+
+	// Emit attack event
+	s.eventBus.Emit(GameEvent{
+		Type:      EventUnitAttacked,
+		Timestamp: time.Now(),
+		Tick:      s.tick,
+		ActorID:   client.Id,
+		TargetID:  targetId,
+		Data: map[string]any{
+			"damage": damage,
+		},
+	})
+
+	// Emit damage event
+	s.eventBus.Emit(GameEvent{
+		Type:      EventEntityDamaged,
+		Timestamp: time.Now(),
+		Tick:      s.tick,
+		ActorID:   client.Id,
+		TargetID:  targetId,
+		Data: map[string]any{
+			"damage":    damage,
+			"oldHealth": oldHealth,
+			"newHealth": target.Health,
+		},
+	})
 
 	log.Printf("Client %d attacked entity %d for %d damage (HP: %d)", client.Id, targetId, damage, target.Health)
 
 	// Check if destroyed
 	if target.Health <= 0 {
+		// Emit destroyed events before deletion
+		s.eventBus.Emit(GameEvent{
+			Type:      EventBuildingDestroyed,
+			Timestamp: time.Now(),
+			Tick:      s.tick,
+			ActorID:   client.Id,
+			TargetID:  targetId,
+			Data: map[string]any{
+				"buildingType": target.Type,
+				"ownerId":      target.OwnerId,
+			},
+		})
+
+		s.eventBus.Emit(GameEvent{
+			Type:      EventEntityDestroyed,
+			Timestamp: time.Now(),
+			Tick:      s.tick,
+			ActorID:   client.Id,
+			TargetID:  targetId,
+			Data: map[string]any{
+				"entityType": target.Type,
+				"ownerId":    target.OwnerId,
+			},
+		})
+
 		delete(s.entities, targetId)
 		log.Printf("Entity %d destroyed", targetId)
 	}
-	// No events needed - client will see health change / entity removal in snapshot
 }
 
 func (s *GameServer) broadcastMessage(msg Message) {
+	if s.conn == nil {
+		// Server not started (e.g. in-process tests) — nothing to send
+		return
+	}
+
 	data, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("Error marshaling broadcast message: %v", err)
@@ -1924,7 +2230,7 @@ func (s *GameServer) sendMessage(msg Message, addr *net.UDPAddr) {
 	s.conn.WriteToUDP(data, addr)
 }
 
-func (s *GameServer) marshalData(data interface{}) json.RawMessage {
+func (s *GameServer) marshalData(data any) json.RawMessage {
 	bytes, err := json.Marshal(data)
 	if err != nil {
 		log.Printf("Error marshaling data: %v", err)
@@ -1943,6 +2249,19 @@ func main() {
 	// Create server and assign map
 	server := NewGameServer()
 	server.mapData = mapData
+
+	// Load default game mode (relative to server directory) and start the match
+	mode, err := LoadGameModeAndCreate("game_modes/resource_race.json")
+	if err != nil {
+		log.Fatalf("Failed to load game mode: %v", err)
+	}
+	server.setGameMode(mode, mode.definition)
+	log.Printf("Loaded game mode '%s' (%s)", mode.GetName(), mode.GetID())
+
+	ctx := server.buildMatchContext()
+	mode.OnMatchCreated(ctx)
+	mode.OnMatchStarting(ctx)
+	mode.OnMatchStarted(ctx)
 
 	// Start server
 	if err := server.Start(); err != nil {

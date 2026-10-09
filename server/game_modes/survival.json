@@ -1,0 +1,65 @@
+{
+  "id": "survival",
+  "name": "Survival",
+  "description": "Last player standing wins - eliminate all enemy buildings and units",
+
+  "parameters": {
+    "starting_money": 100,
+    "starting_units": 5
+  },
+
+  "win_conditions": [
+    {
+      "id": "sole_survivor",
+      "name": "Sole Survivor",
+      "priority": 1,
+      "rule": {
+        "type": "comparison",
+        "left": {"stat": "total_buildings", "global": true},
+        "operator": "==",
+        "right": {"stat": "buildings_placed", "player": "any"}
+      },
+      "winner": "player_who_triggered"
+    }
+  ],
+
+  "lose_conditions": [
+    {
+      "id": "eliminated",
+      "name": "Eliminated",
+      "rule": {
+        "type": "and",
+        "rules": [
+          {
+            "type": "comparison",
+            "left": {"stat": "buildings_placed", "player": "self"},
+            "operator": "==",
+            "right": {"stat": "buildings_lost", "player": "self"}
+          }
+        ]
+      }
+    }
+  ],
+
+  "periodic_checks": [
+    {
+      "name": "resource_generation",
+      "interval_ticks": 20,
+      "action": {
+        "type": "grant_resources",
+        "amount_per_building": 10,
+        "building_type": "generator"
+      }
+    }
+  ],
+
+  "event_triggers": [],
+
+  "ui": {
+    "objective_text": "Destroy all enemy buildings to win",
+    "show_timer": false,
+    "show_money": true,
+    "victory_message": "Victory! All enemies eliminated!",
+    "defeat_message": "Defeated! All your buildings were destroyed."
+  }
+}
