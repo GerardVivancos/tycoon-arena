@@ -94,7 +94,11 @@ Client                          Server
         {"x": 15, "y": 10, "type": "rock", "height": 2},
         {"x": 16, "y": 10, "type": "rock", "height": 2}
       ]
-    }
+    },
+    "gameModeName": "Resource Race",
+    "objectiveText": "Reach $500 before your opponent",
+    "showTimer": true,
+    "showMoney": true
   }
 }
 ```
@@ -108,6 +112,10 @@ Client                          Server
 - `arenaTilesWidth` - map width in tiles (from map data)
 - `arenaTilesHeight` - map height in tiles (from map data)
 - `terrainData` - default terrain type plus sparse list of non-default tiles for rendering
+- `gameModeName` - display name of the active game mode (empty if none)
+- `objectiveText` - objective shown in the client HUD (from mode `ui.objective_text`)
+- `showTimer` - whether the client should surface a match timer (from mode `ui.show_timer`)
+- `showMoney` - whether money is displayed (from mode `ui.show_money`)
 
 ### 3. Input (Client → Server)
 
@@ -308,6 +316,39 @@ Client                          Server
 ```
 
 **Purpose:** Keep connection alive, detect disconnections
+
+### 6. Game Over (Server → Client)
+
+**Purpose:** Sent **once** when the active game mode's win condition fires and
+the match is finalized (`IMPROVEMENT_PLAN.md` Phase 1). After this message the
+server rejects further inputs and join attempts; snapshots keep flowing so
+clients stay in sync. Clients must stop sending commands and display the
+result.
+
+```json
+{
+  "type": "game_over",
+  "data": {
+    "winnerId": 1,
+    "conditionId": "resource_victory",
+    "conditionName": "Resource Victory",
+    "objectiveText": "Reach $500 before your opponent",
+    "victoryMessage": "Victory! You reached the resource goal!",
+    "defeatMessage": "Defeated! Your opponent reached the goal first."
+  }
+}
+```
+
+**Fields:**
+- `winnerId` - winning player's client id (`0` = no determinable winner)
+- `conditionId` / `conditionName` - which win condition fired
+- `objectiveText` - the mode's objective (informational)
+- `victoryMessage` / `defeatMessage` - mode UI strings for win/lose display
+
+**Note (Phase 1):** the game-mode plumbing is live, but the shipped JSON modes
+(`resource_race`, `survival`, `timed_race`) cannot fire until Phase 2 gives the
+rule engine per-player resolution (`player: "self"/"any"`). Lose conditions are
+not evaluated in the live loop yet.
 
 ---
 

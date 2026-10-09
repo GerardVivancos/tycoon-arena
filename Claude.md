@@ -203,16 +203,16 @@ Why this combination:
 
    ## Testing
 
-   The project includes a comprehensive test framework with 12 tests (10 unit + 2 scenario):
-   - **Unit tests**: Pathfinding, terrain passability, formations, collisions
-   - **Scenario tests**: Declarative JSON scenarios that run automatically
+The project includes a comprehensive test framework with 56 test functions (55 unit + 1 scenario harness running 2 declarative scenarios):
+- **Unit tests**: Pathfinding, terrain passability, formations, collisions, event bus, statistics, rule engine, game modes
+- **Scenario tests**: Declarative JSON scenarios that run automatically
 
-   **Quick start:**
-   ```bash
-   cd server
-   go test -v                    # Run all 12 tests
-   go test -run TestAllScenarios # Run 2 scenario tests
-   ```
+**Quick start:**
+```bash
+cd server
+go test -v                    # Run all 56 tests
+go test -run TestAllScenarios # Run the scenario harness (2 scenarios)
+```
 
    **Creating tests:**
    - Write scenarios in JSON format (`maps/scenarios/*.json`)

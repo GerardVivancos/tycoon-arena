@@ -1,8 +1,8 @@
 # Current Project State - Quick Reference
 
-**Last Updated:** 2025-10-14 (Evening Session)
-**Current Work:** ✅ **Formation Movement Fixed** + Test Framework Overhaul
-**Previous Sprint:** Formation Positioning + Movement Debugging - ✅ Complete
+**Last Updated:** 2025-10-09 (Phase 1 complete)
+**Current Work:** ✅ **Phase 1** of [IMPROVEMENT_PLAN.md](../../IMPROVEMENT_PLAN.md) — game modes wired into the tick loop (`game_over` protocol + client HUD)
+**Next Up:** Phase 2 — rule engine per-player resolution so shipped JSON modes can actually fire
 
 ---
 
@@ -23,15 +23,22 @@
 - ✅ Client-side prediction and interpolation
 - ✅ 40×30 tile maps with terrain (grass, rocks, obstacles)
 - ✅ Camera zoom (0.5× to 2.0×) and pan (WASD/arrows/trackpad)
-- ✅ **Comprehensive test suite** - 16 unit tests + scenario harness passing
-  - 16 unit tests (pathfinding, formations, terrain, collisions)
+- ✅ **Comprehensive test suite** - 56 test functions passing
+  - 55 unit tests (pathfinding, formations, terrain, collisions, event bus,
+    statistics, rule engine, game modes, game-mode plumbing)
   - Scenario harness runs 2 declarative JSON scenarios end-to-end
   - `TestAllUnitsReceivePaths` ensures every unit in formation gets a path
 - ✅ **Strict test expectations** - Tests properly catch broken behavior
+- ✅ **Game modes wired into the loop (Phase 1)** - `main()` loads `resource_race`,
+  `gameTick()` evaluates win conditions each tick, `game_over` message + client
+  HUD (objective/victory/defeat), inputs/joins frozen after match end
+- ⚠️ **Shipped JSON modes can't fire yet** - rule engine lacks per-player
+  resolution (`player: "self"/"any"`) and `determineWinner` is a stub; lose
+  conditions are not evaluated in the live loop — Phase 2 closes this
 
 **Current Map:** Default JSON map `maps/default.json` (40×30 tiles, 7 rock obstacles)
 **Testing:** Full declarative test framework (Phase 1 & 2 complete)
-**Next Feature:** Win conditions, more unit types, or visual scenario editor
+**Next Feature:** Rule engine per-player resolution (IMPROVEMENT_PLAN.md Phase 2)
 
 ---
 
@@ -166,14 +173,28 @@ cd server && go run main.go
 - **Server-side only**: Client receives current+next tile, not full path
 
 ### 11. Testing Framework ✅
-- **Unit tests**: 5 tests covering pathfinding, formations, collisions
+- **Unit tests**: 50 test functions (core, event bus, statistics, rule engine, game modes)
 - **Test maps**: 3 specialized maps (single rock, cluster, corridor)
 - **Declarative scenarios**: JSON-based test definitions
-- **Visual output**: Automatic SVG diagram generation (Phase 1)
-- **CLI tool**: `scenario-viz` generates visuals from JSON
-- **Scenario runner**: Executes scenarios in isolated test server (Phase 2)
+- **Scenario runner**: Executes scenarios in isolated test server
 - **Test integration**: Auto-discovers and runs all scenarios with `go test`
 - **Example scenarios**: 2 working examples (both passing)
+
+### 12. Game Event & Mode Framework ✅ Wired (Phase 1) / ⚠️ Rules Pending Phase 2
+- **Event bus** (`event_bus.go`): typed game events, synchronous pub/sub;
+  `main.go` emits resource/build/attack/destroy events from the tick loop and command handlers
+- **Statistics** (`statistics.go`): per-player + global counters and time series,
+  wired to the event bus via `setupStatisticsTracking()`
+- **Rule engine** (`rule_engine.go`): declarative comparison/logical rules parsed from JSON
+- **Game modes** (`game_mode.go`, `game_modes/*.json`): `resource_race` (default, loaded
+  in `main()`), `survival`, `timed_race`; `gameTick()` → `checkMatchEnd()` (after unlock)
+  evaluates win conditions; `endMatch()` freezes inputs/joins, emits `match.ended`,
+  and broadcasts `game_over` (handled by `NetworkManager.gd`/`GameController.gd`,
+  `GameStatus` HUD label)
+- **Gap (Phase 2)**: per-player rule resolution (`player: "self"/"any"`) and
+  `determineWinner` winner strategy are stubs, so the shipped JSON modes cannot
+  actually win a match yet; lose conditions are intentionally unevaluated live
+  (self-referencing rules would false-positive against player 0's empty stats)
 
 ---
 
@@ -182,18 +203,23 @@ cd server && go run main.go
 ```
 realtime-game-engine/
 ├── server/
-│   ├── main.go              # Entire server (1400+ lines with pathfinding)
-│   ├── game_test.go         # Unit tests (5 tests)
-│   ├── scenario_test.go     # Scenario tests (2 tests) + adapter
+│   ├── main.go              # Core server (2000+ lines: tick loop, networking, commands)
+│   ├── event_bus.go         # Game event pub/sub
+│   ├── statistics.go        # Player/global stats + event wiring
+│   ├── rule_engine.go       # Declarative JSON rule evaluation
+│   ├── game_mode.go         # JSON-defined game modes
+│   ├── game_modes/          # resource_race, survival, timed_race JSON
+│   ├── game_test.go         # Core unit tests (16)
+│   ├── event_bus_test.go    # Event bus tests (6)
+│   ├── statistics_test.go   # Statistics tests (7)
+│   ├── rule_engine_test.go  # Rule engine tests (12)
+│   ├── game_mode_test.go    # Game mode tests (9)
+│   ├── scenario_test.go     # Scenario harness + adapter
 │   ├── testutil/
 │   │   ├── scenario.go           # Scenario schema + loader
-│   │   ├── scenario_renderer.go  # SVG generation
 │   │   ├── scenario_runner.go    # Scenario execution engine
 │   │   ├── test_server.go        # Test utilities
 │   │   └── assertions.go         # Test assertions
-│   ├── cmd/
-│   │   └── scenario-viz/
-│   │       └── main.go      # CLI visualization tool
 │   └── go.mod
 ├── client/
 │   ├── project.godot        # Godot project config
@@ -236,14 +262,14 @@ realtime-game-engine/
 
 ### Server (`server/main.go`)
 
-| Function | Purpose | Line # (approx) |
-|----------|---------|-----------------|
-| `gameTick()` | Main game loop, processes inputs | ~240 |
-| `handleMoveCommand()` | Movement with formations | ~626 |
-| `calculateFormation()` | Formation algorithms | ~502 |
-| `handleBuildCommand()` | Building placement | ~730 |
-| `handleAttackCommand()` | Combat system | ~790 |
-| `broadcastSnapshot()` | Send world state to clients | ~290 |
+| Function | Purpose | Line # |
+|----------|---------|--------|
+| `gameTick()` | Main game loop, processes inputs | 354 |
+| `handleMoveCommand()` | Movement with formations | 1469 |
+| `calculateFormation()` | Formation algorithms | 1053 |
+| `handleBuildCommand()` | Building placement | 1831 |
+| `handleAttackCommand()` | Combat system | 1941 |
+| `broadcastMessage()` | Send world state to clients | 2034 |
 
 ### Client (`client/GameController.gd`)
 
@@ -307,9 +333,12 @@ realtime-game-engine/
 ### Current Limitations
 1. **Formation edge cases**: Units can still pile up slightly at map edges when blocked
 2. **Single terrain layer**: No multi-tile features (forests, mountains) yet
-3. **No win conditions**: Game continues indefinitely
-4. **No fog of war**: All terrain visible at all times
-5. **4-directional movement only**: No diagonal pathfinding yet
+3. **No win conditions in live play**: Game-mode framework exists (see section 12)
+   but `gameTick()` never checks win/lose conditions — IMPROVEMENT_PLAN.md Phases 1-2
+4. **Combat is buildings-only**: `handleAttackCommand` only accepts `generator`
+   targets; units cannot fight units — IMPROVEMENT_PLAN.md Phase 3
+5. **No fog of war**: All terrain visible at all times
+6. **4-directional movement only**: No diagonal pathfinding yet
 
 ### Known Quirks
 1. **Client IDs skip numbers**: Due to shared ID counter (cosmetic only)

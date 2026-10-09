@@ -36,6 +36,7 @@
 - Sprint 4+ - Win conditions, more unit types, visual scenario editor (upcoming)
 
 ## Quick Links
+- **Improvement Plan**: [/IMPROVEMENT_PLAN.md](../../IMPROVEMENT_PLAN.md) - Phased work queue (review follow-ups)
 - **Server Code**: `/server/main.go`
 - **Client Code**: `/client/` (Godot project)
 - **Testing Guide**: [/TESTING.md](../../TESTING.md) - How to run and create tests

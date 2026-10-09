@@ -23,7 +23,7 @@ go test -v -run TestAllScenarios/navigate_around_rock
 
 ## Test Coverage
 
-### Unit Tests (16 tests)
+### Unit Tests (55 tests)
 
 **Pathfinding:**
 - `TestPathfindingAroundSingleRock` - Routes around 1 obstacle
@@ -46,6 +46,33 @@ go test -v -run TestAllScenarios/navigate_around_rock
 - `TestLineFormationOriented` - Line formation extends opposite movement
 - `TestLineFormationBackwardExtension` - Line extends from click point
 - `TestAllUnitsReceivePaths` - Every unit in formation gets a path
+
+**Event Bus (6 tests)** — `server/event_bus_test.go`:
+- `TestEventBusEmitAndReceive`, `TestEventBusMultipleListeners`, `TestEventBusNoListeners`
+- `TestEventBusDifferentEventTypes`, `TestEventBusClear`, `TestEventBusOff`
+
+**Statistics (7 tests)** — `server/statistics_test.go`:
+- `TestStatisticsBasicOperations`, `TestStatisticsMultiplePlayers`, `TestStatisticsGetAll`
+- `TestStatisticsGlobalCounters`, `TestStatisticsTimeSeries`, `TestStatisticsReset`
+- `TestStatisticsEventIntegration`
+
+**Rule Engine (12 tests)** — `server/rule_engine_test.go`:
+- `TestComparisonRuleBasic`, `TestComparisonRuleAllOperators`
+- `TestLogicalRuleAnd`, `TestLogicalRuleOr`, `TestLogicalRuleNot`, `TestNestedLogicalRules`
+- `TestGlobalStats`, `TestParameterValues`, `TestAlwaysRules`
+- `TestParseRuleFromJSON`, `TestParseLogicalRuleFromJSON`, `TestParseRuleWithParameter`
+
+**Game Modes (9 tests)** — `server/game_mode_test.go`:
+- `TestLoadGameMode`, `TestNewJSONGameMode`, `TestGameModeWinCondition`, `TestGameModeObjectiveText`
+- `TestGameModeStatistics`, `TestSurvivalGameMode`, `TestTimedRaceGameMode`
+- `TestGameModePeriodicChecks`, `TestGameModeLifecycleHooks`
+
+**Game Mode Plumbing (5 tests)** — `server/game_mode_plumbing_test.go`:
+- `TestGameServerGameModePlumbing` - win condition in tick loop ends match with a winner
+- `TestCheckMatchEndNoMode` - no mode set → no panic, match never ends
+- `TestGameOverGuardsCommands` - commands ignored after match end
+- `TestBuildGameOverMessage` - game_over payload carries mode UI strings
+- `TestEndMatchIdempotent` - second endMatch is a no-op, one `match.ended` event
 
 ### Scenario Tests (2 tests)
 
