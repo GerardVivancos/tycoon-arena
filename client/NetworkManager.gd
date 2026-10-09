@@ -3,6 +3,8 @@ extends Node
 signal connected_to_server(client_id: int, tick_rate: int, tile_size: int, arena_tiles_width: int, arena_tiles_height: int, terrain_data: Dictionary)
 signal snapshot_received(snapshot: Dictionary)
 signal disconnected_from_server()
+signal game_over_received(payload: Dictionary)
+signal mode_info_received(objective_text: String, show_timer: bool, show_money: bool, mode_name: String)
 
 var udp_socket: PacketPeerUDP
 var server_address: String = "127.0.0.1"
@@ -111,6 +113,8 @@ func handle_message(message: Dictionary):
 			handle_welcome(message.get("data", {}))
 		"snapshot":
 			handle_snapshot(message.get("data", {}))
+		"game_over":
+			handle_game_over(message.get("data", {}))
 		"pong":
 			pass  # Handle ping/pong if needed
 
@@ -124,17 +128,31 @@ func handle_welcome(data: Dictionary):
 	arena_tiles_width = int(data.get("arenaTilesWidth"))
 	arena_tiles_height = int(data.get("arenaTilesHeight"))
 	var terrain_data = data.get("terrainData", {})
+
+	# Game mode UI config (present when the server runs with a game mode)
+	var mode_name = String(data.get("gameModeName", ""))
+	var objective_text = String(data.get("objectiveText", ""))
+	var show_timer = bool(data.get("showTimer", false))
+	var show_money = bool(data.get("showMoney", true))
+
 	is_connected = true
 	heartbeat_timer = 0.0  # Reset timer
 	command_history.clear()  # Clear history on new connection
 	print("Connected! Client ID: %d, Tick Rate: %d, Heartbeat: %.1fs, Redundancy: %d" % [client_id, tick_rate, heartbeat_interval, input_redundancy])
 	print("Tile config: Size=%d, Arena=%dx%d tiles" % [tile_size, arena_tiles_width, arena_tiles_height])
 	print("Terrain: %d tiles, default=%s" % [terrain_data.get("tiles", []).size(), terrain_data.get("defaultType", "unknown")])
+	if mode_name != "":
+		print("Game mode: %s — %s" % [mode_name, objective_text])
 	connected_to_server.emit(client_id, tick_rate, tile_size, arena_tiles_width, arena_tiles_height, terrain_data)
+	mode_info_received.emit(objective_text, show_timer, show_money, mode_name)
 
 func handle_snapshot(data: Dictionary):
 	current_tick = data.get("tick", 0)
 	snapshot_received.emit(data)
+
+func handle_game_over(data: Dictionary):
+	print("Game over received: winner=%s condition=%s" % [data.get("winnerId", -1), data.get("conditionName", "")])
+	game_over_received.emit(data)
 
 func disconnect_from_server():
 	is_connected = false

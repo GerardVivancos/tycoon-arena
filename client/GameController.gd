@@ -16,6 +16,7 @@ extends Node2D
 @onready var line_formation_button = $UI/LineFormationButton
 @onready var spread_formation_button = $UI/SpreadFormationButton
 @onready var event_log = $UI/EventLog
+@onready var game_status_label = $UI/GameStatus
 
 # Tile system (from server via handshake)
 var tile_size: int
@@ -39,6 +40,11 @@ var selected_target_id: int = -1  # Target for attacks (buildings)
 var selected_building: Node2D = null
 var event_messages: Array = []
 
+# Game mode / match state
+var match_over: bool = false
+var game_mode_name: String = ""
+var objective_text: String = ""
+
 # Drag selection
 var is_dragging: bool = false
 var drag_start_pos: Vector2 = Vector2.ZERO
@@ -60,6 +66,8 @@ func _ready():
 	network_manager.connected_to_server.connect(_on_connected_to_server)
 	network_manager.snapshot_received.connect(_on_snapshot_received)
 	network_manager.disconnected_from_server.connect(_on_disconnected_from_server)
+	network_manager.game_over_received.connect(_on_game_over_received)
+	network_manager.mode_info_received.connect(_on_mode_info_received)
 
 	# Connect UI signals
 	build_button.pressed.connect(_on_build_button_pressed)
@@ -86,6 +94,11 @@ func _on_connected_to_server(client_id: int, tick_rate: int, tile_sz: int, tiles
 	arena_tiles_height = tiles_h
 	connection_label.text = "Connected (ID: %d)" % client_id
 	print("Connected with client ID: %d, Arena: %dx%d tiles" % [client_id, tiles_w, tiles_h])
+
+	# Reset match state (also handles reconnect after a finished match)
+	match_over = false
+	build_button.disabled = false
+	attack_button.disabled = false
 
 	# Calculate camera bounds based on map size in isometric space
 	# Isometric maps form a diamond, so we need all 4 corners
@@ -346,6 +359,40 @@ func _on_disconnected_from_server():
 		entity.queue_free()
 	entities.clear()
 
+func _on_mode_info_received(objective_text: String, show_timer: bool, show_money: bool, mode_name: String):
+	# Server told us which game mode is active — show its objective
+	self.game_mode_name = mode_name
+	self.objective_text = objective_text
+	if mode_name == "":
+		game_status_label.text = ""
+		return
+	game_status_label.text = "[%s] %s" % [mode_name, objective_text]
+	log_event("Game mode: %s — %s" % [mode_name, objective_text])
+
+func _on_game_over_received(payload: Dictionary):
+	match_over = true
+
+	var winner_id := int(payload.get("winnerId", -1))
+	var victory_msg := String(payload.get("victoryMessage", "Victory!"))
+	var defeat_msg := String(payload.get("defeatMessage", "Defeat!"))
+	var condition_name := String(payload.get("conditionName", "Match ended"))
+
+	var result_text: String
+	if winner_id == local_client_id:
+		result_text = victory_msg
+	elif winner_id == 0:
+		result_text = "Match over — %s" % condition_name
+	else:
+		result_text = defeat_msg
+
+	game_status_label.text = result_text
+	connection_label.text = "Match over (winner ID: %d)" % winner_id
+	build_button.disabled = true
+	attack_button.disabled = true
+	selected_units.clear()
+	update_selection_visual()
+	log_event("Match over — %s (winner ID %d)" % [condition_name, winner_id])
+
 func _process(delta):
 	# Update FPS
 	fps_label.text = "FPS: %d" % Engine.get_frames_per_second()
@@ -499,6 +546,8 @@ func _unhandled_input(event):
 
 	# Right click to move selected units
 	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
+		if match_over:
+			return
 		if selected_units.is_empty():
 			log_event("No units selected")
 			return
@@ -795,6 +844,8 @@ func log_event(message: String):
 	event_log.scroll_to_line(event_log.get_line_count() - 1)
 
 func _on_build_button_pressed():
+	if match_over:
+		return
 	if not network_manager.is_connected or tile_size == 0 or selected_units.is_empty():
 		log_event("No units selected to build!")
 		return
@@ -850,6 +901,8 @@ func can_build_at_tile(tile_x: int, tile_y: int) -> bool:
 	return true
 
 func _on_attack_button_pressed():
+	if match_over:
+		return
 	if not network_manager.is_connected or selected_target_id == -1:
 		log_event("No target selected!")
 		return
