@@ -237,9 +237,9 @@ func (s *GameServer) setupStatisticsTracking() {
 	// Track attacks
 	s.eventBus.On(EventUnitAttacked, func(e GameEvent) {
 		s.stats.Increment(e.ActorID, StatAttacksMade, 1)
-		if e.TargetID != 0 {
-			// Get target owner from entity
-			// For now, we'll track on attacker only
+		// attacks_received lands on the target's owner
+		if owner, ok := e.Data["targetOwnerId"].(uint32); ok {
+			s.stats.Increment(owner, StatAttacksReceived, 1)
 		}
 	})
 
@@ -258,8 +258,11 @@ func (s *GameServer) setupStatisticsTracking() {
 
 		s.stats.Increment(e.ActorID, StatDamageDealt, float64(damage))
 
-		// To track damage taken, we'd need to know the target's owner
-		// This requires looking up the entity, which we can do in the event handler
+		// damage_taken lands on the target's owner (carried in the event so the
+		// handler does not need to look up a possibly-deleted entity)
+		if owner, ok := e.Data["targetOwnerId"].(uint32); ok {
+			s.stats.Increment(owner, StatDamageTaken, float64(damage))
+		}
 	})
 
 	// Track entity creation

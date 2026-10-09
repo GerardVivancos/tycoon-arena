@@ -181,7 +181,8 @@ Client                          Server
           {
             "type": "attack",
             "data": {
-              "targetId": 7
+              "targetId": 7,
+              "unitIds": [10, 11]
             }
           }
         ]
@@ -229,12 +230,16 @@ Client                          Server
 }
 ```
 
-**Attack** - Damage target entity
+**Attack** - Order units to attack a target entity (unit or building).
+`unitIds` names the attacking units (falls back to the client's units if
+omitted). The server assigns the target; each attacker paths within its combat
+**range** and deals damage on a per-type **cooldown** (see Combat Constants).
 ```json
 {
   "type": "attack",
   "data": {
-    "targetId": 5
+    "targetId": 5,
+    "unitIds": [10, 11, 12]
   }
 }
 ```
@@ -458,9 +463,12 @@ Snapshot arrives: no new building, money unchanged
 - No collision with existing buildings (AABB check)
 
 **Attack:**
-- Target entity exists
-- Target not owned by attacker
-- Target is attackable type (generator, not player)
+- Target entity exists and is an attackable type (`worker`/`player` unit or `generator`)
+- Target not owned by the ordering client
+- Named `unitIds` (or, if omitted, the client's own units) must belong to the client and be
+  combat-capable (`worker`); the command assigns the target — damage is applied by the tick
+  combat step once an attacker is within range and its cooldown has elapsed
+- Buildings are non-combatant (attackable, but cannot attack)
 
 ### Client Prediction Rules
 
@@ -558,7 +566,9 @@ type Client struct {
 | BuildingCost | 50 | Generator cost |
 | BuildingSize | 2×2 tiles | Generator footprint |
 | GeneratorIncome | 10/sec | Money generation rate |
-| AttackDamage | 25 | Damage per attack |
+| AttackDamage | 25 | Damage per worker attack (see `unitCombatStats`) |
+| AttackRange | 1 tile | Melee range (Manhattan dist. to target footprint) |
+| AttackInterval | 20 ticks (~1s @ 20Hz) | Worker attack cooldown |
 
 ---
 

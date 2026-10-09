@@ -23,7 +23,7 @@ go test -v -run TestAllScenarios/navigate_around_rock
 
 ## Test Coverage
 
-### Unit Tests (61 tests)
+### Unit Tests (68 tests)
 
 **Pathfinding:**
 - `TestPathfindingAroundSingleRock` - Routes around 1 obstacle
@@ -80,11 +80,22 @@ go test -v -run TestAllScenarios/navigate_around_rock
 - `TestBuildGameOverMessage` - game_over payload carries mode UI strings
 - `TestEndMatchIdempotent` - second endMatch is a no-op, one `match.ended` event
 
-### Scenario Tests (2 tests)
+**Unit Combat (7 tests)** — `server/combat_test.go`:
+- `TestUnitKillsEnemyUnit` - melee kill + `damage_dealt`/`damage_taken`/`attacks_made`/
+  `attacks_received`/`units_killed`/`units_lost` assertions
+- `TestUnitChasesAndKillsTarget` - out-of-range attacker paths into range, then kills
+- `TestAttackRespectsCooldown` - one hit per 20-tick interval (not every tick)
+- `TestAttackOutOfRangeDoesNotDamageYet` - no damage while out of range; unit starts pathing
+- `TestBuildingsDoNotAttack` - generators are non-combatant
+- `TestCannotAttackOwnUnit` - self-attack is rejected
+- `TestUnitDestroysEnemyBuilding` - worker destroys a generator (+ `buildings_destroyed`/`buildings_lost`)
+
+### Scenario Tests (3 tests)
 
 **JSON-based declarative tests:**
 - `navigate_around_rock` - Single unit pathfinds around obstacle
 - `formation_around_cluster` - Five units form up near blocked area
+- `unit_combat` - A worker is ordered to attack and destroys an enemy generator
 
 ---
 

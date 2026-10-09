@@ -1,0 +1,38 @@
+{
+  "name": "Unit Destroys Enemy Generator",
+  "map": "test_single_rock.json",
+  "description": "A worker is ordered to attack an enemy generator; it closes to melee range and destroys it (Phase 3 unit combat)",
+
+  "setup": {
+    "units": [
+      {"id": "attacker", "team": 0, "type": "worker", "position": [3, 2], "label": "A"}
+    ],
+    "buildings": [
+      {"id": "target", "team": 1, "type": "generator", "position": [5, 2], "label": "T"}
+    ]
+  },
+
+  "actions": [
+    {
+      "tick": 0,
+      "type": "attack",
+      "unitIds": ["attacker"],
+      "targetId": "target"
+    }
+  ],
+
+  "expectations": {
+    "maxTicks": 200,
+    "finalState": {
+      "units": [
+        {"id": "attacker", "positionNear": [4, 2], "tolerance": 2, "state": "stopped"}
+      ],
+      "buildings": [
+        {"id": "target", "position": [5, 2], "exists": false}
+      ]
+    },
+    "constraints": {
+      "allStopped": true
+    }
+  }
+}

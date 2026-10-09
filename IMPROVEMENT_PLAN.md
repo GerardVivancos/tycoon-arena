@@ -116,14 +116,34 @@ Shipped modes are now genuinely winnable/losable in the live loop.
 ## Phase 3 — Combat expansion
 
 **Objective:** Support unit combat and complete the statistics they feed.
+Decisions: directed attack-move with range/cooldown (1A), attack command carries
+`unitIds` (2A), per-type combat table as server constants (3A), buildings are
+non-combatant, plus a declarative scenario.
 
-- [ ] **3.1** `handleAttackCommand` (`main.go:1941`): allow attacking units (not just
-      `generator`), with range/HP handling and unit-vs-unit targeting.
-- [ ] **3.2** `statistics.go`: populate `damage_taken`, `attacks_received`, and
-      `units_killed` / `units_lost` in event handlers.
-- [ ] **3.3** Update `NETWORK_PROTOCOL.md` (attackable types) and the combat stats docs.
+- [x] **3.1** `handleAttackCommand`: now *assigns* a target (`AttackTargetId`) to
+      the named `unitIds` (or the client's own units) instead of applying one-shot
+      damage; validates attackable types (`worker`/`player`/`generator`) and enemy
+      ownership. New `processCombat()` (in `gameTick`, after formations) moves
+      attackers into range (`pathUnitToAttackRange`/`nearestAttackTile`) and applies
+      damage via `applyDamage()` on a per-type cooldown (`unitCombatStats`:
+      worker dmg 25 / range 1 / interval 20). `handleMoveCommand` clears
+      `AttackTargetId`; `Entity` gains `AttackTargetId`/`NextAttackTick`. ✅ (2025-10-09)
+- [x] **3.2** `statistics.go`: `damage_taken` + `attacks_received` now land on the
+      target's owner (carried as `targetOwnerId` in `entity.damaged`/`unit.attacked`);
+      `units_killed`/`units_lost` fire for unit deaths via `entity.destroyed`. ✅ (2025-10-09)
+- [x] **3.3** `NETWORK_PROTOCOL.md`: attack `unitIds` + combat semantics; constants
+      table gains AttackRange/AttackInterval; validation rules updated. ✅ (2025-10-09)
+- [x] **3.4** Tests: `combat_test.go` (+7: kill, chase, cooldown, out-of-range,
+      non-combatant building, no self-attack, destroy building) and new scenario
+      `maps/scenarios/unit_combat.json`. Test-adapter fixes: `Tick()` now runs
+      `processCombat()`, `AttackTarget` sends `unitIds`, and destroyed buildings are
+      recorded so `exists:false` is verifiable. ✅ (2025-10-09)
 
-**Verify:** new unit tests for unit combat + stat assertions; `go test -v` all pass.
+**Verify:** `gofmt -l .` empty, `go vet ./...` clean, `go test -count=1 ./...`
+69/69 green (2025-10-09).
+
+**Follow-up (not in scope):** auto-acquire/defensive AI, ranged unit types,
+building attackers, and a "no units remaining" lose rule for `survival`.
 
 ---
 
@@ -155,5 +175,9 @@ Shipped modes are now genuinely winnable/losable in the live loop.
       highest_stat; periodic grant_resources + increment_global_stat wired into
       tick; live lose conditions + lone-survivor; modes winnable/losable; +6 tests,
       62 green)
-- [ ] Phase 3 — combat expansion
+- [x] Phase 3 — combat expansion (done 2025-10-09: unit-vs-unit + unit-vs-building
+      attack-move with range/cooldown via processCombat; per-type combat table;
+      damage_taken/attacks_received/units_killed/units_lost wired; attack `unitIds`;
+      client sends unitIds + enemy-unit targeting; +7 tests + unit_combat scenario,
+      69 green. Note: harness fixed to record destroyed buildings & run combat on tick)
 - [ ] Phase 4 — concurrency hardening

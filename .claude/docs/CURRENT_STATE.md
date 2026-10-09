@@ -1,8 +1,8 @@
 # Current Project State - Quick Reference
 
-**Last Updated:** 2025-10-09 (Phase 2 complete)
-**Current Work:** ✅ **Phase 2** of [IMPROVEMENT_PLAN.md](../../IMPROVEMENT_PLAN.md) — rule engine per-player resolution; shipped JSON modes now winnable/losable in the live loop
-**Next Up:** Phase 3 — combat expansion (unit-vs-unit targeting + combat statistics)
+**Last Updated:** 2025-10-09 (Phase 3 complete)
+**Current Work:** ✅ **Phase 3** of [IMPROVEMENT_PLAN.md](../../IMPROVEMENT_PLAN.md) — unit combat (attack-move units vs units/buildings with range/cooldown + combat stats)
+**Next Up:** Phase 4 — concurrency & correctness hardening (`Emit`-outside-lock, `go test -race`)
 
 ---
 
@@ -18,16 +18,18 @@
 - ✅ Isometric rendering with terrain visualization
 - ✅ Drag-to-select box selection
 - ✅ Building placement (generators that produce $10/sec)
-- ✅ Combat system (attack enemy buildings)
+- ✅ Combat system — units attack-move to destroy enemy **units and buildings**
+  (range/cooldown; buildings non-combatant)
 - ✅ Server-authoritative networking (UDP, 20Hz tick rate)
 - ✅ Client-side prediction and interpolation
 - ✅ 40×30 tile maps with terrain (grass, rocks, obstacles)
 - ✅ Camera zoom (0.5× to 2.0×) and pan (WASD/arrows/trackpad)
-- ✅ **Comprehensive test suite** - 62 test functions passing
-  - 61 unit tests (pathfinding, formations, terrain, collisions, event bus,
+- ✅ **Comprehensive test suite** - 69 test functions passing
+  - 68 unit tests (pathfinding, formations, terrain, collisions, event bus,
     statistics, rule engine incl. per-player resolution, game modes incl.
-    win/lose/periodic/E2E, game-mode plumbing)
-  - Scenario harness runs 2 declarative JSON scenarios end-to-end
+    win/lose/periodic/E2E, game-mode plumbing, unit combat)
+  - Scenario harness runs 3 declarative JSON scenarios end-to-end
+    (incl. `unit_combat` — a worker destroys an enemy generator)
   - `TestAllUnitsReceivePaths` ensures every unit in formation gets a path
 - ✅ **Strict test expectations** - Tests properly catch broken behavior
 - ✅ **Game modes wired into the loop (Phases 1-2)** - `main()` loads `resource_race`,
@@ -40,10 +42,14 @@
 - ✅ **Lose conditions live** - self-referencing rules (bankruptcy/elimination)
   evaluated per player; lone survivor wins (`last_player_standing`); fresh
   players seed `money_current` so bankruptcy never false-positives on join
+- ✅ **Unit combat (Phase 3)** - `attack` command (with `unitIds`) assigns a target;
+  `processCombat()` walks attackers into melee range and applies damage on a
+  per-type cooldown (`unitCombatStats`); combat stats `damage_dealt`/`damage_taken`/
+  `attacks_made`/`attacks_received`/`units_killed`/`units_lost` are wired
 
 **Current Map:** Default JSON map `maps/default.json` (40×30 tiles, 7 rock obstacles)
-**Testing:** Full declarative test framework (Phase 1 & 2 complete)
-**Next Feature:** Combat expansion — unit-vs-unit targeting + combat stats (IMPROVEMENT_PLAN.md Phase 3)
+**Testing:** Full declarative test framework (Phases 1-3 complete)
+**Next Feature:** Concurrency hardening — `Emit`-outside-lock + `go test -race` (IMPROVEMENT_PLAN.md Phase 4)
 
 ---
 
@@ -135,11 +141,15 @@ cd server && go run main.go
 - **Validation**: Server checks money, bounds, collision
 - **Rendering**: 3D box (top face + 2 sides, shaded)
 
-### 5. Combat System ✅
-- **Damage**: 25 HP per attack
-- **Targeting**: Click to select enemy building, Q to attack
+### 5. Combat System ✅ (unit-capable, Phase 3)
+- **Damage**: worker = 25 HP per hit (`unitCombatStats`), melee range 1 tile, 20-tick cooldown
+- **Targets**: enemy **units and buildings**; buildings are non-combatant (HP only)
+- **Flow**: `attack` command (with `unitIds`) assigns `AttackTargetId`; `processCombat()`
+  in the tick pathfinds attackers into range then applies damage on cooldown
 - **Health**: 100 HP → 4 hits to destroy
-- **Validation**: Server prevents friendly fire
+- **Client**: click an enemy unit/building to target it, Q (or Attack button) to attack
+  with the selected units
+- **Validation**: server rejects attacking own entities and non-attackable types
 
 ### 6. Networking ✅
 - **Protocol**: JSON over UDP
@@ -178,8 +188,9 @@ cd server && go run main.go
 - **Server-side only**: Client receives current+next tile, not full path
 
 ### 11. Testing Framework ✅
-- **Unit tests**: 61 unit test functions (core, event bus, statistics, rule engine
-  incl. per-player self/opponent/any/id, game modes incl. win/lose/periodic/E2E)
+- **Unit tests**: 68 unit test functions (core, event bus, statistics, rule engine
+  incl. per-player self/opponent/any/id, game modes incl. win/lose/periodic/E2E,
+  unit combat incl. chase/cooldown/stats)
 - **Test maps**: 3 specialized maps (single rock, cluster, corridor)
 - **Declarative scenarios**: JSON-based test definitions
 - **Scenario runner**: Executes scenarios in isolated test server
@@ -226,6 +237,7 @@ realtime-game-engine/
 │   ├── rule_engine_test.go  # Rule engine tests (13)
 │   ├── game_mode_test.go    # Game mode tests (14)
 │   ├── game_mode_plumbing_test.go # Game-mode server wiring tests (5)
+│   ├── combat_test.go       # Unit combat tests (7)
 │   ├── scenario_test.go     # Scenario harness + adapter
 │   ├── testutil/
 │   │   ├── scenario.go           # Scenario schema + loader
@@ -348,8 +360,9 @@ realtime-game-engine/
 3. **Only three shipped modes**: `resource_race`, `survival`, `timed_race` are now
    winnable/losable live (Phases 1-2), but periodic income was removed in favor of the
    core `$10/s`/generator loop; richer modes/params are future work
-4. **Combat is buildings-only**: `handleAttackCommand` only accepts `generator`
-   targets; units cannot fight units — IMPROVEMENT_PLAN.md Phase 3
+4. **Combat scope**: units attack-move enemy units/buildings (Phase 3), but buildings
+   are non-combatant (no defensive fire) and there is no auto-acquire, ranged unit
+   type, or unit-attack cooldown UI — follow-ups in IMPROVEMENT_PLAN.md
 5. **No fog of war**: All terrain visible at all times
 6. **4-directional movement only**: No diagonal pathfinding yet
 
@@ -408,6 +421,25 @@ realtime-game-engine/
 ---
 
 ## Recently Completed
+
+### Unit Combat ✅ (Phase 3, 2025-10-09)
+- ✅ **Attack-move combat** (`main.go`) — `handleAttackCommand` now assigns
+  `AttackTargetId` to the named `unitIds` (or the client's own units) instead of
+  one-shot damage; `processCombat()` (in `gameTick`, after formations) walks
+  attackers into melee range (`pathUnitToAttackRange`/`nearestAttackTile`) and
+  applies damage via `applyDamage()` on a per-type cooldown
+- ✅ **Combat table** — `unitCombatStats`: worker = 25 dmg / 1-tile range / 20-tick
+  cooldown; `Entity` gained `AttackTargetId`/`NextAttackTick`; buildings are
+  non-combatant; `handleMoveCommand` clears the attack target
+- ✅ **Combat stats** (`statistics.go`) — `damage_taken` + `attacks_received` now
+  land on the target's owner (carried as `targetOwnerId`); `units_killed`/`units_lost`
+  fire on unit death via `entity.destroyed`
+- ✅ **Protocol/client** — `attack` carries `unitIds`; client sends selected units and
+  can click an enemy unit (not just buildings) to target it
+- ✅ **+7 tests (69 green)** — `combat_test.go` (kill, chase, cooldown, out-of-range,
+  non-combatant building, no self-attack, destroy building) + `unit_combat.json`
+  scenario; test harness fixed to run combat on `Tick()`, send `unitIds`, and record
+  destroyed buildings so `exists:false` verifies
 
 ### Game Modes Live + Rule Engine Per-Player Resolution ✅ (Phase 2, 2025-10-09)
 - ✅ **Per-player rule resolution** (`rule_engine.go`) — `RuleContext` gained

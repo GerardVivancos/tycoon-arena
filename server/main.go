@@ -34,6 +34,21 @@ const (
 	GeneratorIncome = 10.0
 )
 
+// combatStats describes how a unit type attacks (Phase 3). Buildings are
+// non-combatant and therefore have no entry here. Range is measured in tiles
+// using Manhattan distance to the target's footprint; interval is in ticks.
+type combatStats struct {
+	Damage        int32
+	Range         int
+	IntervalTicks uint64
+}
+
+// unitCombatStats is the per-type combat table. Keep in sync with unit types
+// created in handleHello / handleBuildCommand.
+var unitCombatStats = map[string]combatStats{
+	"worker": {Damage: 25, Range: 1, IntervalTicks: 20}, // melee: adjacent, ~1s cooldown @ 20Hz
+}
+
 type MessageType string
 
 const (
@@ -118,7 +133,8 @@ type BuildCommand struct {
 }
 
 type AttackCommand struct {
-	TargetId uint32 `json:"targetId"`
+	TargetId uint32   `json:"targetId"`
+	UnitIds  []uint32 `json:"unitIds"` // Attacking units (falls back to owned units if empty)
 }
 
 type SnapshotMessage struct {
@@ -163,6 +179,10 @@ type Entity struct {
 	Path        []TilePosition `json:"-"` // Full path to goal (not sent to client)
 	PathIndex   int            `json:"-"` // Current waypoint index
 	BlockedTime float32        `json:"-"` // Time spent blocked (for rerouting)
+
+	// Combat
+	AttackTargetId uint32 `json:"-"` // Entity id this unit is attacking (0 = none)
+	NextAttackTick uint64 `json:"-"` // Earliest tick the unit may attack again
 }
 
 type Client struct {
@@ -655,6 +675,9 @@ func (s *GameServer) gameTick() {
 
 	// Update formations (followers maintain offset from leader)
 	s.tickFormations()
+
+	// Resolve combat: units move into range of their target and attack
+	s.processCombat()
 
 	// Generate resources from buildings
 	for _, entity := range s.entities {
@@ -1788,6 +1811,8 @@ func (s *GameServer) handleMoveCommand(cmd Command, client *Client) {
 
 		// Only move units, not buildings
 		if entity.Type == "worker" {
+			// A fresh move order overrides any standing attack assignment
+			entity.AttackTargetId = 0
 			validUnitIds = append(validUnitIds, unitId)
 		}
 	}
@@ -2211,6 +2236,9 @@ func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 	log.Printf("Client %d built %s at tile (%d, %d)", client.Id, buildingType, tileX, tileY)
 }
 
+// handleAttackCommand assigns an attack target to the client's selected units.
+// Damage is applied by the tick combat step (processCombat) once a unit is in
+// range and its cooldown is ready. Buildings are attackable but non-combatant.
 func (s *GameServer) handleAttackCommand(cmd Command, client *Client) {
 	attackData, ok := cmd.Data.(map[string]any)
 	if !ok {
@@ -2223,85 +2251,293 @@ func (s *GameServer) handleAttackCommand(cmd Command, client *Client) {
 	}
 	targetId := uint32(targetIdFloat)
 
-	// Find target entity
+	// Target must exist and belong to an enemy
 	target, exists := s.entities[targetId]
+	if !exists || target.OwnerId == client.Id {
+		return
+	}
+	if !isAttackable(target.Type) {
+		return
+	}
+
+	// Resolve attacking units (unitIds if provided, else all owned attackers)
+	attackerIds := s.resolveAttackers(client, attackData["unitIds"])
+	assigned := 0
+	for _, attackerId := range attackerIds {
+		attacker, ok := s.entities[attackerId]
+		if !ok || attacker.OwnerId != client.Id {
+			continue
+		}
+		if _, canAttack := unitCombatStats[attacker.Type]; !canAttack {
+			continue
+		}
+		attacker.AttackTargetId = targetId
+		attacker.Path = nil
+		attacker.PathIndex = 0
+		attacker.MoveProgress = 0
+		attacker.NextAttackTick = s.tick // allow an immediate first strike
+		assigned++
+	}
+
+	log.Printf("Client %d ordered %d unit(s) to attack entity %d", client.Id, assigned, targetId)
+}
+
+// isAttackable reports whether entities of the given type can be targeted.
+func isAttackable(entityType string) bool {
+	return entityType == "worker" || entityType == "player" || entityType == "generator"
+}
+
+// resolveAttackers returns the attacking unit ids: those in rawUnitIds (JSON
+// []any of float64) filtered to the client's own units, or — when the list is
+// empty/absent — all of the client's units that are capable of attacking.
+func (s *GameServer) resolveAttackers(client *Client, rawUnitIds any) []uint32 {
+	if list, ok := rawUnitIds.([]any); ok && len(list) > 0 {
+		ids := make([]uint32, 0, len(list))
+		for _, v := range list {
+			f, ok := v.(float64)
+			if !ok {
+				continue
+			}
+			id := uint32(f)
+			if e, ok := s.entities[id]; ok && e.OwnerId == client.Id {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) > 0 {
+			return ids
+		}
+	}
+
+	ids := make([]uint32, 0, len(client.OwnedUnits))
+	for _, id := range client.OwnedUnits {
+		if e, ok := s.entities[id]; ok && e.OwnerId == client.Id {
+			if _, canAttack := unitCombatStats[e.Type]; canAttack {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
+// processCombat resolves attack orders: units path into range of their target
+// and apply damage on a per-type cooldown. Called from gameTick with s.mu held.
+func (s *GameServer) processCombat() {
+	attackers := make([]*Entity, 0, len(s.entities))
+	for _, e := range s.entities {
+		if e.AttackTargetId != 0 {
+			attackers = append(attackers, e)
+		}
+	}
+
+	for _, attacker := range attackers {
+		// Attacker may already have been destroyed earlier this tick
+		if _, alive := s.entities[attacker.Id]; !alive {
+			continue
+		}
+		cs, ok := unitCombatStats[attacker.Type]
+		if !ok {
+			attacker.AttackTargetId = 0
+			continue
+		}
+		target, ok := s.entities[attacker.AttackTargetId]
+		if !ok || target.OwnerId == attacker.OwnerId {
+			attacker.AttackTargetId = 0
+			continue
+		}
+
+		if distanceEntityToEntity(attacker, target) <= cs.Range {
+			// In range: halt and attack on cooldown
+			attacker.Path = nil
+			attacker.PathIndex = 0
+			attacker.MoveProgress = 0
+			if s.tick >= attacker.NextAttackTick {
+				s.applyDamage(attacker.OwnerId, target.Id, cs.Damage)
+				attacker.NextAttackTick = s.tick + cs.IntervalTicks
+			}
+			continue
+		}
+
+		// Out of range: move toward the target
+		s.pathUnitToAttackRange(attacker, target, cs.Range)
+	}
+}
+
+// applyDamage applies damage from attackerID to targetID, emitting attack and
+// damage events, and destruction events (building.destroyed + entity.destroyed
+// for buildings, entity.destroyed for units) when the target dies. Called with
+// s.mu held.
+func (s *GameServer) applyDamage(attackerID, targetID uint32, damage int32) {
+	target, exists := s.entities[targetID]
 	if !exists {
 		return
 	}
-
-	// Can't attack own entities
-	if target.OwnerId == client.Id {
-		return
-	}
-
-	// Only allow attacking buildings for now
-	if target.Type != "generator" {
-		return
-	}
-
-	// Apply damage
-	damage := int32(25)
 	oldHealth := target.Health
 	target.Health -= damage
+	targetOwner := target.OwnerId
 
-	// Emit attack event
 	s.eventBus.Emit(GameEvent{
 		Type:      EventUnitAttacked,
 		Timestamp: time.Now(),
 		Tick:      s.tick,
-		ActorID:   client.Id,
-		TargetID:  targetId,
+		ActorID:   attackerID,
+		TargetID:  targetID,
 		Data: map[string]any{
-			"damage": damage,
+			"damage":        damage,
+			"targetOwnerId": targetOwner,
 		},
 	})
 
-	// Emit damage event
 	s.eventBus.Emit(GameEvent{
 		Type:      EventEntityDamaged,
 		Timestamp: time.Now(),
 		Tick:      s.tick,
-		ActorID:   client.Id,
-		TargetID:  targetId,
+		ActorID:   attackerID,
+		TargetID:  targetID,
 		Data: map[string]any{
-			"damage":    damage,
-			"oldHealth": oldHealth,
-			"newHealth": target.Health,
+			"damage":        damage,
+			"oldHealth":     oldHealth,
+			"newHealth":     target.Health,
+			"targetOwnerId": targetOwner,
 		},
 	})
 
-	log.Printf("Client %d attacked entity %d for %d damage (HP: %d)", client.Id, targetId, damage, target.Health)
+	if target.Health > 0 {
+		return
+	}
 
-	// Check if destroyed
-	if target.Health <= 0 {
-		// Emit destroyed events before deletion
+	if target.Type == "generator" {
 		s.eventBus.Emit(GameEvent{
 			Type:      EventBuildingDestroyed,
 			Timestamp: time.Now(),
 			Tick:      s.tick,
-			ActorID:   client.Id,
-			TargetID:  targetId,
+			ActorID:   attackerID,
+			TargetID:  targetID,
 			Data: map[string]any{
 				"buildingType": target.Type,
-				"ownerId":      target.OwnerId,
+				"ownerId":      targetOwner,
 			},
 		})
-
-		s.eventBus.Emit(GameEvent{
-			Type:      EventEntityDestroyed,
-			Timestamp: time.Now(),
-			Tick:      s.tick,
-			ActorID:   client.Id,
-			TargetID:  targetId,
-			Data: map[string]any{
-				"entityType": target.Type,
-				"ownerId":    target.OwnerId,
-			},
-		})
-
-		delete(s.entities, targetId)
-		log.Printf("Entity %d destroyed", targetId)
 	}
+
+	s.eventBus.Emit(GameEvent{
+		Type:      EventEntityDestroyed,
+		Timestamp: time.Now(),
+		Tick:      s.tick,
+		ActorID:   attackerID,
+		TargetID:  targetID,
+		Data: map[string]any{
+			"entityType": target.Type,
+			"ownerId":    targetOwner,
+		},
+	})
+
+	delete(s.entities, targetID)
+	log.Printf("Entity %d destroyed by %d", targetID, attackerID)
+}
+
+// pathUnitToAttackRange ensures the attacker is heading to a tile within
+// rangeTiles of the target. Keeps a valid existing path, otherwise recomputes.
+func (s *GameServer) pathUnitToAttackRange(attacker, target *Entity, rangeTiles int) {
+	if len(attacker.Path) > 0 {
+		last := attacker.Path[len(attacker.Path)-1]
+		if distanceTileToEntity(last.X, last.Y, target) <= rangeTiles {
+			return
+		}
+	}
+
+	best, found := s.nearestAttackTile(attacker, target, rangeTiles)
+	if !found {
+		return
+	}
+	if path := s.findPath(attacker.TileX, attacker.TileY, best.X, best.Y, attacker.Id); len(path) > 0 {
+		attacker.Path = path
+		attacker.PathIndex = 0
+		attacker.MoveProgress = 0
+	}
+}
+
+// nearestAttackTile finds the reachable, non-building tile within rangeTiles of
+// the target that is closest to the attacker (excluding the target's own tiles).
+func (s *GameServer) nearestAttackTile(attacker, target *Entity, rangeTiles int) (TilePosition, bool) {
+	w, h := target.FootprintWidth, target.FootprintHeight
+	if w <= 0 {
+		w = 1
+	}
+	if h <= 0 {
+		h = 1
+	}
+
+	var best TilePosition
+	bestDist := int(^uint(0) >> 1)
+	found := false
+
+	for x := target.TileX - rangeTiles; x <= target.TileX+w-1+rangeTiles; x++ {
+		for y := target.TileY - rangeTiles; y <= target.TileY+h-1+rangeTiles; y++ {
+			// Skip the target's own footprint
+			if x >= target.TileX && x <= target.TileX+w-1 && y >= target.TileY && y <= target.TileY+h-1 {
+				continue
+			}
+			if distanceTileToEntity(x, y, target) > rangeTiles {
+				continue
+			}
+			if !s.isTilePassable(x, y) || s.isTileOccupiedByBuilding(x, y) {
+				continue
+			}
+			d := absInt(x-attacker.TileX) + absInt(y-attacker.TileY)
+			if d < bestDist {
+				bestDist = d
+				best = TilePosition{X: x, Y: y}
+				found = true
+			}
+		}
+	}
+	return best, found
+}
+
+// distanceEntityToEntity is the Manhattan distance from a's tile to the nearest
+// tile of target's footprint.
+func distanceEntityToEntity(a, t *Entity) int {
+	return distanceTileToEntity(a.TileX, a.TileY, t)
+}
+
+// distanceTileToEntity is the Manhattan distance from a tile to the nearest tile
+// of the entity's footprint (units are treated as 1x1).
+func distanceTileToEntity(tx, ty int, t *Entity) int {
+	nearestX, nearestY := nearestFootprintTile(tx, ty, t)
+	return absInt(tx-nearestX) + absInt(ty-nearestY)
+}
+
+// nearestFootprintTile clamps (tx, ty) to the entity's footprint rectangle.
+func nearestFootprintTile(tx, ty int, t *Entity) (int, int) {
+	w, h := t.FootprintWidth, t.FootprintHeight
+	if w <= 0 {
+		w = 1
+	}
+	if h <= 0 {
+		h = 1
+	}
+	nearestX := tx
+	if nearestX < t.TileX {
+		nearestX = t.TileX
+	}
+	if nearestX > t.TileX+w-1 {
+		nearestX = t.TileX + w - 1
+	}
+	nearestY := ty
+	if nearestY < t.TileY {
+		nearestY = t.TileY
+	}
+	if nearestY > t.TileY+h-1 {
+		nearestY = t.TileY + h - 1
+	}
+	return nearestX, nearestY
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 func (s *GameServer) broadcastMessage(msg Message) {

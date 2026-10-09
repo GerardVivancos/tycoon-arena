@@ -524,7 +524,13 @@ func _unhandled_input(event):
 						log_event("Selected unit %d" % clicked_entity_id)
 						print("Selected unit: ", clicked_entity_id)
 					else:
-						print("Not our unit or invalid entity")
+						# Enemy unit (or building) clicked - set as attack target
+						if entity:
+							selected_target_id = clicked_entity_id
+							selection_label.text = "Target: Enemy #%d - press Q to attack!" % clicked_entity_id
+							log_event("Targeting enemy entity %d" % clicked_entity_id)
+						else:
+							print("Not our unit or invalid entity")
 				else:
 					# Clicked empty space - deselect all
 					selected_units.clear()
@@ -906,6 +912,9 @@ func _on_attack_button_pressed():
 	if not network_manager.is_connected or selected_target_id == -1:
 		log_event("No target selected!")
 		return
+	if selected_units.is_empty():
+		log_event("No attacking units selected!")
+		return
 
 	# Check if target entity exists and is not owned by us
 	if not (selected_target_id in entities):
@@ -916,14 +925,15 @@ func _on_attack_button_pressed():
 	var target_owner = target.get_meta("owner_id") if target.has_meta("owner_id") else -1
 
 	if target_owner == local_client_id:
-		log_event("Can't attack your own buildings!")
+		log_event("Can't attack your own units or buildings!")
 		return
 
 	var commands = [{
 		"type": "attack",
 		"data": {
-			"targetId": selected_target_id
+			"targetId": selected_target_id,
+			"unitIds": selected_units
 		}
 	}]
 	network_manager.send_input(commands)
-	log_event("Attacking entity %d..." % selected_target_id)
+	log_event("Attacking entity %d with %d unit(s)..." % [selected_target_id, selected_units.size()])

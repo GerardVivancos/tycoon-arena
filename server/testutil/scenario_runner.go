@@ -132,15 +132,19 @@ func RunScenario(scenario *TestScenario, gameServer GameServerInterface) (*Scena
 	}
 
 	for scenarioID, entityID := range buildingIDMap {
-		pos := gameServer.GetEntityPosition(entityID)
+		// Record even when destroyed: verification only checks Exists, so a
+		// missing building must still appear (with Exists=false) rather than be
+		// omitted and misreported as "does not exist in final state".
 		exists := gameServer.EntityExists(entityID)
-
+		pos := gameServer.GetEntityPosition(entityID)
+		position := [2]int{}
 		if pos != nil {
-			result.FinalState.Buildings[scenarioID] = ActualBuilding{
-				ID:       scenarioID,
-				Position: *pos,
-				Exists:   exists,
-			}
+			position = *pos
+		}
+		result.FinalState.Buildings[scenarioID] = ActualBuilding{
+			ID:       scenarioID,
+			Position: position,
+			Exists:   exists,
 		}
 	}
 

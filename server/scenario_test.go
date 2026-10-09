@@ -160,6 +160,9 @@ func (a *TestGameServerAdapter) Tick() {
 		}
 	}
 
+	// Resolve combat (move into range + apply damage on cooldown)
+	a.server.processCombat()
+
 	a.server.tick++
 }
 
@@ -237,16 +240,30 @@ func (a *TestGameServerAdapter) MoveUnits(entityIDs []uint32, targetX, targetY i
 
 // AttackTarget commands units to attack a target
 func (a *TestGameServerAdapter) AttackTarget(entityIDs []uint32, targetID uint32) error {
-	// Create mock client
+	// The attacking side "owns" the command; derive the acting client id from
+	// the first attacker's team so ownership checks pass.
+	var ownerId uint32
+	if len(entityIDs) > 0 {
+		ownerId = uint32(a.GetEntityTeam(entityIDs[0]))
+	}
+
 	mockClient := &Client{
-		Id:    0,
-		Name:  "TestClient",
-		Money: 1000,
+		Id:         ownerId,
+		Name:       "TestClient",
+		Money:      1000,
+		OwnedUnits: entityIDs,
+	}
+
+	// Build unitIds as []any of float64 (mirroring JSON parsing)
+	unitIdsInterface := make([]any, len(entityIDs))
+	for i, id := range entityIDs {
+		unitIdsInterface[i] = float64(id)
 	}
 
 	// Create attack command data as map (simulating JSON parsing)
 	attackData := map[string]any{
 		"targetId": float64(targetID),
+		"unitIds":  unitIdsInterface,
 	}
 
 	cmd := Command{
@@ -254,7 +271,7 @@ func (a *TestGameServerAdapter) AttackTarget(entityIDs []uint32, targetID uint32
 		Data: attackData,
 	}
 
-	// Process the command (once for all units)
+	// Process the command (assigns the target to the attacking units)
 	a.server.handleAttackCommand(cmd, mockClient)
 
 	return nil
