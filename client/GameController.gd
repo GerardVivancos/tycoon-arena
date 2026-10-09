@@ -263,6 +263,11 @@ func _on_snapshot_received(snapshot: Dictionary):
 	var entities_data = snapshot.get("entities", [])
 	players_data = snapshot.get("players", {})
 
+	# Phase 5: baselineTick == 0 means a full snapshot; otherwise this is a
+	# delta (changed entities + an explicit "removed" id list).
+	var baseline_tick = int(snapshot.get("baselineTick", 0))
+	var is_full = (baseline_tick == 0)
+
 	# Update local money
 	if str(local_client_id) in players_data:
 		var player_data = players_data[str(local_client_id)]
@@ -295,7 +300,7 @@ func _on_snapshot_received(snapshot: Dictionary):
 		# Convert to isometric screen position
 		var screen_pos = tile_to_iso(interp_tile_x, interp_tile_y)
 
-		if entity_type == "player" or entity_type == "worker":
+		if entity_type == "player" or entity_type == "worker" or entity_type == "soldier":
 			if entity_id in entities:
 				# Update existing unit
 				var unit = entities[entity_id]
@@ -307,7 +312,7 @@ func _on_snapshot_received(snapshot: Dictionary):
 				unit.setup(entity_id, owner_id, screen_pos, is_local)
 
 				if is_local:
-					unit.set_player_name("Worker")
+					unit.set_player_name("Worker" if entity_type != "soldier" else "Soldier")
 				else:
 					unit.set_player_name("Enemy")
 
@@ -328,24 +333,34 @@ func _on_snapshot_received(snapshot: Dictionary):
 				entities[entity_id] = building
 				print("Spawned generator %d at tile (%d, %d)" % [entity_id, tile_x, tile_y])
 
-	# Remove entities that are no longer in the snapshot
-	for entity_id in entities.keys():
-		if not (entity_id in current_entity_ids):
-			var entity = entities[entity_id]
-			entity.queue_free()
-			entities.erase(entity_id)
-			# Remove from selection if it was selected
-			if entity_id in selected_units:
-				selected_units.erase(entity_id)
-			# Clear target if it was the selected target
-			if entity_id == selected_target_id:
-				selected_target_id = -1
-				selected_building = null
-				selection_label.text = ""
-			print("Removed entity %d" % entity_id)
+	# Remove entities: on a full snapshot, drop any we didn't see this tick;
+	# on a delta, drop only the ids the server explicitly removed.
+	if is_full:
+		for entity_id in entities.keys():
+			if not (entity_id in current_entity_ids):
+				_remove_entity(entity_id)
+	else:
+		for removed_id in snapshot.get("removed", []):
+			_remove_entity(int(removed_id))
 
 	# Update player list
 	update_player_list()
+
+func _remove_entity(entity_id: int):
+	if not (entity_id in entities):
+		return
+	var entity = entities[entity_id]
+	entity.queue_free()
+	entities.erase(entity_id)
+	# Remove from selection if it was selected
+	if entity_id in selected_units:
+		selected_units.erase(entity_id)
+	# Clear target if it was the selected target
+	if entity_id == selected_target_id:
+		selected_target_id = -1
+		selected_building = null
+		selection_label.text = ""
+	print("Removed entity %d" % entity_id)
 
 func _on_disconnected_from_server():
 	connection_label.text = "Disconnected"

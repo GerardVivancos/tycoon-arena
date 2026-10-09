@@ -1,8 +1,8 @@
 # Current Project State - Quick Reference
 
-**Last Updated:** 2025-10-09 (Phase 3 complete)
-**Current Work:** ✅ **Phase 3** of [IMPROVEMENT_PLAN.md](../../IMPROVEMENT_PLAN.md) — unit combat (attack-move units vs units/buildings with range/cooldown + combat stats)
-**Next Up:** Phase 4 — concurrency & correctness hardening (`Emit`-outside-lock, `go test -race`)
+**Last Updated:** 2025-10-10 (Phase 5 complete)
+**Current Work:** ✅ **Phase 5** of [IMPROVEMENT_PLAN.md](../../IMPROVEMENT_PLAN.md) complete — scale & authoring tools (configurable map + data-driven `BalanceConfig`; delta-compressed snapshots; ranged `soldier` unit; visual scenario editor). Phases 0-5 done.
+**Next Up:** Phase 6 (deferred) — fog of war (server-authoritative per-client visibility, composes with the delta snapshot path).
 
 ---
 
@@ -24,11 +24,12 @@
 - ✅ Client-side prediction and interpolation
 - ✅ 40×30 tile maps with terrain (grass, rocks, obstacles)
 - ✅ Camera zoom (0.5× to 2.0×) and pan (WASD/arrows/trackpad)
-- ✅ **Comprehensive test suite** - 69 test functions passing
-  - 68 unit tests (pathfinding, formations, terrain, collisions, event bus,
+- ✅ **Comprehensive test suite** - 84 test functions passing
+  - 83 unit tests (pathfinding, formations, terrain, collisions, event bus,
     statistics, rule engine incl. per-player resolution, game modes incl.
-    win/lose/periodic/E2E, game-mode plumbing, unit combat)
-  - Scenario harness runs 3 declarative JSON scenarios end-to-end
+    win/lose/periodic/E2E, game-mode plumbing, unit combat, concurrency,
+    balance config, snapshot deltas, soldier/ranged combat)
+  - Scenario harness runs 4 declarative JSON scenarios end-to-end
     (incl. `unit_combat` — a worker destroys an enemy generator)
   - `TestAllUnitsReceivePaths` ensures every unit in formation gets a path
 - ✅ **Strict test expectations** - Tests properly catch broken behavior
@@ -188,18 +189,22 @@ cd server && go run main.go
 - **Server-side only**: Client receives current+next tile, not full path
 
 ### 11. Testing Framework ✅
-- **Unit tests**: 68 unit test functions (core, event bus, statistics, rule engine
+- **Unit tests**: 83 unit test functions (core, event bus, statistics, rule engine
   incl. per-player self/opponent/any/id, game modes incl. win/lose/periodic/E2E,
-  unit combat incl. chase/cooldown/stats)
+  unit combat incl. chase/cooldown/stats, concurrency incl. deadlock guard,
+  balance config, snapshot delta/full, soldier ranged combat)
 - **Test maps**: 3 specialized maps (single rock, cluster, corridor)
 - **Declarative scenarios**: JSON-based test definitions
 - **Scenario runner**: Executes scenarios in isolated test server
 - **Test integration**: Auto-discovers and runs all scenarios with `go test`
 - **Example scenarios**: 2 working examples (both passing)
 
-### 12. Game Event & Mode Framework ✅ (Phases 1-2 complete)
-- **Event bus** (`event_bus.go`): typed game events, synchronous pub/sub;
-  `main.go` emits resource/build/attack/destroy events from the tick loop and command handlers
+### 12. Game Event & Mode Framework ✅ (Phases 1-5 complete)
+- **Event bus** (`event_bus.go`): typed game events, synchronous pub/sub. State is
+  mutated under `s.mu`; events are **queued** (`queueEvent`) while the lock is held
+  and **emitted after unlock** (`flushEvents()`, called by `gameTick`), so listeners
+  never run under `s.mu` and may safely acquire it (Phase 4). `main.go` emits
+  resource/build/attack/destroy events from the tick loop and command handlers
 - **Statistics** (`statistics.go`): per-player + global counters and time series,
   wired to the event bus via `setupStatisticsTracking()`
 - **Rule engine** (`rule_engine.go`): declarative comparison/logical rules parsed from
@@ -217,6 +222,13 @@ cd server && go run main.go
 - **Per-player + deterministic**: rules iterate clients via `sortedClientIDs()` (ascending),
   so the same game state always produces the same winner; lose conditions crown the lone
   survivor (`last_player_standing`) and are skipped in solo matches
+- **Data-driven balance** (`config.go`, `maps/balance.json`): `BalanceConfig` supplies
+  unit HP/damage/range/cooldown/speed and building cost/health/income/footprint, loaded
+  from JSON with Go defaults (worker/generator/soldier); `-map`/`-balance` flags choose
+  files; `welcome.balance` surfaces costs/HP to the client (Phase 5)
+- **Delta snapshots** (`buildSnapshotLocked`): broadcasts changed entities + `removed`
+  ids, with a full snapshot on join and every `FullSnapshotInterval` ticks; clients
+  reconcile full vs delta by `baselineTick` (Phase 5)
 
 ---
 
@@ -228,6 +240,7 @@ realtime-game-engine/
 │   ├── main.go              # Core server (2000+ lines: tick loop, networking, commands)
 │   ├── event_bus.go         # Game event pub/sub
 │   ├── statistics.go        # Player/global stats + event wiring
+│   ├── config.go            # BalanceConfig (data-driven unit/building balance) + helpers
 │   ├── rule_engine.go       # Declarative JSON rule evaluation
 │   ├── game_mode.go         # JSON-defined game modes
 │   ├── game_modes/          # resource_race, survival, timed_race JSON
@@ -238,6 +251,10 @@ realtime-game-engine/
 │   ├── game_mode_test.go    # Game mode tests (14)
 │   ├── game_mode_plumbing_test.go # Game-mode server wiring tests (5)
 │   ├── combat_test.go       # Unit combat tests (7)
+│   ├── concurrency_test.go  # Event-lock/deadlock + race tests (2)
+│   ├── balance_test.go      # BalanceConfig load/override + build/HP (6)
+│   ├── snapshot_test.go     # Snapshot full/delta/periodic/force tests (4)
+│   ├── soldier_combat_test.go # Ranged soldier config-driven combat (3)
 │   ├── scenario_test.go     # Scenario harness + adapter
 │   ├── testutil/
 │   │   ├── scenario.go           # Scenario schema + loader
@@ -252,8 +269,12 @@ realtime-game-engine/
 │   ├── GameController.gd    # Main game logic (880+ lines)
 │   ├── NetworkManager.gd    # UDP networking
 │   └── Player.gd            # Unit visuals & interpolation
+├── client/editor/
+│   ├── Editor.gd            # Visual map + scenario editor (paint/place/export/run)
+│   └── Editor.tscn          # Editor scene
 ├── maps/
 │   ├── default.json         # 40×30 main map
+│   ├── balance.json         # Data-driven unit/building/economy balance
 │   ├── test_single_rock.json    # Test map
 │   ├── test_rock_cluster.json   # Test map
 │   ├── test_corridor.json       # Test map
@@ -421,6 +442,55 @@ realtime-game-engine/
 ---
 
 ## Recently Completed
+
+### Scale & Authoring Tools ✅ (Phase 5, 2025-10-10)
+- ✅ **Configurable map + data-driven balance** — `-map`/`MAP_FILE` and
+  `-balance`/`BALANCE_FILE` flags (`main.go`); `BalanceConfig` in `config.go`
+  loaded from `maps/balance.json` with Go defaults (worker/generator/soldier), so
+  tests are unchanged without the file. Unit HP/damage/range/cooldown/speed and
+  building cost/health/income/footprint now come from config; `welcome` carries a
+  `balance` block (start money, build cost, unit/building HP). `handleBuildCommand`
+  and the income loop read the config; `isAttackableTarget` is config-driven
+- ✅ **Delta-compressed snapshots** — `SnapshotMessage.Removed` + `buildSnapshotLocked()`
+  (`main.go`): deltas carry changed entities only; a full snapshot (`BaselineTick 0`)
+  is sent on the first build, when a client joins (`forceFullSnapshot`), and every
+  `FullSnapshotInterval` (20) ticks to self-heal dropped UDP packets; the tiny
+  players map is always full. `GameController.gd` `_on_snapshot_received` is
+  delta-aware (applies changed entities + explicit `removed`, `_remove_entity` helper)
+- ✅ **Ranged soldier unit** — defined purely in `BalanceConfig` (120 HP / 15 dmg /
+  range 3 / 15-tick cooldown); spawned via `StartingSoldiers` (0 by default so the
+  default match is unchanged; `maps/balance.json` sets 1); `newUnitEntity` builds
+  units from config; client renders soldiers as units
+- ✅ **Visual scenario editor** — `client/editor/Editor.gd` + `Editor.tscn`: paint
+  terrain, place spawn points + scenario units/buildings, record move/attack via
+  click-to-target, `Save Map`/`Export Scenario` write `maps/*.json` +
+  `maps/scenarios/*.json` in the exact schemas `LoadMap`/harness consume, and
+  `Run Scenario` shells `go -C server test -run TestAllScenarios/<name>`
+- ✅ **+13 tests (84 green)** — `balance_test.go` (6), `snapshot_test.go` (4),
+  `soldier_combat_test.go` (3) + `attack_soldier` scenario (4th scenario); adapter
+  `SpawnUnit`/`SpawnBuilding`/`Tick` made config-aware via `newUnitEntity`/
+  `isUnitType`; `-race` clean, Godot `--check-only` clean on both scripts
+
+### Concurrency & Event Ordering ✅ (Phase 4, 2025-10-09)
+- ✅ **Events no longer emitted under `s.mu`** — added `s.eventQueue` +
+  `queueEvent()` (append while the lock is held) and `flushEvents()` (drain via
+  `eventBus.Emit` after the lock is released). The 9 previously in-lock `Emit`
+  calls — tick resource generation, `handleBuildCommand` (money/placed/created),
+  and `applyDamage` (attacked/damaged/building-destroyed/entity-destroyed) — now
+  go through `queueEvent`; `gameTick()` calls `flushEvents()` right after
+  `s.mu.Unlock()`, before `mode.OnTick`/`checkMatchEnd`
+- ✅ **Why** — `EventBus.Emit` runs listeners synchronously; emitting under
+  `s.mu` risked self-deadlock the moment a listener acquires `s.mu`, and
+  serialized the tick loop on listener work. `grantMoneyToPlayer`/`endMatch`
+  already emitted post-unlock; the rule ("never `Emit` under `s.mu`") is now
+  documented in code
+- ✅ **Regression tests** (`concurrency_test.go`) — `TestEmitOutsideLockNoDeadlock`
+  (a listener that acquires `s.mu` proves the deferred path can't hang) and
+  `TestConcurrentTickAndMatchEnd` (tick loop + concurrent grants + concurrent
+  match-end checks hammer a live match; asserts exactly one `match.ended`)
+- ✅ **+2 tests (71 green)**; `go test -race ./...` clean (was already race-free;
+  now guarded). Test drivers that call `processCombat()` directly (combat tests,
+  scenario adapter) updated to `flushEvents()` afterward
 
 ### Unit Combat ✅ (Phase 3, 2025-10-09)
 - ✅ **Attack-move combat** (`main.go`) — `handleAttackCommand` now assigns

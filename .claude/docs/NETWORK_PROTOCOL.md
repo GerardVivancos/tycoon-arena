@@ -20,6 +20,12 @@ This document specifies the authoritative server network protocol for the realti
 4. **Client-side prediction** - clients apply inputs immediately and reconcile with server state
 5. **Input redundancy** - clients send last N commands to handle packet loss
 
+> **Internal event bus (not on the wire):** the server has an internal pub/sub
+> `EventBus` (statistics, game modes) that is **not** part of this protocol. Events
+> are queued while the server lock is held and emitted **after** it is released (and
+> before win/lose checks), so listeners never run under `s.mu` and can safely acquire
+> it. Clients only ever see the resulting snapshots and the `game_over` message.
+
 ---
 
 ## Network Architecture
@@ -298,15 +304,24 @@ omitted). The server assigns the target; each attacker paths within its combat
 
 **Fields:**
 - `tick` - server tick number for this snapshot
-- `baselineTick` - reference tick for delta compression (0 = full snapshot)
-- `entities[]` - all entities in the world
-- `players{}` - player metadata (money, name, etc.)
+- `baselineTick` - 0 = full snapshot; otherwise a delta relative to the last broadcast (Phase 5)
+- `entities[]` - all entities (full snapshot) or only changed entities (delta)
+- `removed[]` - (delta only) entity ids deleted since the last broadcast
+- `players{}` - player metadata (money, name, etc.); always sent in full (it's tiny)
 
-**Delta Compression (Framework Only - Not Implemented):**
-- `baselineTick` always 0 (full snapshot)
-- Future: client sends ACK with last received tick
-- Server uses ACK as baseline, sends only changed entities
-- Falls back to full snapshot if baseline too old
+**Delta Compression (Phase 5 — implemented, broadcast-baseline v1):**
+- `baselineTick == 0` → full snapshot (all entities). Otherwise the message is a
+  delta: `entities[]` holds only entities whose client-visible state changed since
+  the last broadcast, and `removed[]` lists ids to delete.
+- A full snapshot is (re)sent on the first tick, whenever a client joins (the server
+  forces a full broadcast so the newcomer syncs to the shared baseline), and every
+  `FullSnapshotInterval` (20) ticks — bounding the damage a dropped UDP delta can do.
+- The client applies deltas by upserting the listed entities and deleting `removed`;
+  on `baselineTick == 0` it rebuilds, dropping any local entity not present.
+
+**Welcome `balance` block (Phase 5):** the `welcome` message includes a `balance`
+object (`startingMoney`, `buildingCost`, `unitHealth`, `buildingHealth`) so the
+client reads economy/unit values from the server instead of hardcoding them.
 
 ### 5. Ping/Pong (Heartbeat)
 
@@ -499,25 +514,18 @@ Snapshot arrives: no new building, money unchanged
 
 ## Future Optimizations
 
-### Delta Compression (Framework In Place)
+### Delta Compression
 
-**Baseline Tracking:**
-```go
-type Client struct {
-    LastAckTick uint64  // Last snapshot tick client acknowledged
-}
-```
+**Implemented (Phase 5, broadcast-baseline v1):**
+- Server keeps a broadcast baseline (`snapshotBaseline`); deltas carry changed
+  entities + `removed` ids, with a full snapshot on join and every
+  `FullSnapshotInterval` ticks. No per-client state or ACKs needed.
+- Limitation: a dropped delta is unrepaired until the next periodic full snapshot.
 
-**Delta Snapshot:**
-- Client sends ACK: "I have snapshot at tick 1950"
-- Server sends only entities changed since tick 1950
-- Includes full snapshot every N ticks as fallback
-
-**Implementation Deferred:**
-- Structure exists in code
-- `baselineTick` field in snapshot
-- `createSnapshotForClient(client)` function with TODO comments
-- Always returns full snapshot for now
+**Still future (per-client ACK):** the `Client.LastAckTick` field is unused today.
+A v2 could track each client's acknowledged tick, buffer recent snapshots, and send
+exactly the delta from that baseline (no periodic full), at the cost of per-client
+buffering + reliability handling.
 
 ### Lag Compensation
 - Server rewinds time to client's command timestamp

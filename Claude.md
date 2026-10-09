@@ -203,16 +203,22 @@ Why this combination:
 
    ## Testing
 
-The project includes a comprehensive test framework with 69 test functions (68 unit + 1 scenario harness running 3 declarative scenarios):
-- **Unit tests**: Pathfinding, terrain passability, formations, collisions, event bus, statistics, rule engine (incl. per-player self/opponent/any/id resolution), game modes (win/lose/periodic/E2E), unit combat (chase/cooldown/stats)
-- **Scenario tests**: Declarative JSON scenarios that run automatically (incl. `unit_combat`)
+The project includes a comprehensive test framework with 84 test functions (83 unit + 1 scenario harness running 4 declarative scenarios):
+- **Unit tests**: Pathfinding, terrain passability, formations, collisions, event bus, statistics, rule engine (incl. per-player self/opponent/any/id resolution), game modes (win/lose/periodic/E2E), unit combat (chase/cooldown/stats), concurrency (deferred-emit deadlock guard + tick/match-end race test), balance config, snapshot delta/full, soldier (ranged, config-driven)
+- **Scenario tests**: Declarative JSON scenarios that run automatically (incl. `unit_combat`, `attack_soldier`)
 
 **Quick start:**
 ```bash
 cd server
-go test -v                    # Run all 69 tests
-go test -run TestAllScenarios # Run the scenario harness (3 scenarios)
+go test -v                    # Run all 84 tests
+go test -run TestAllScenarios # Run the scenario harness (4 scenarios)
+go test -race -count=1 ./...  # Race detector (covers server/concurrency_test.go)
 ```
+
+**Authoring:** `maps/balance.json` tunes units/buildings/economy; the server takes
+`-map`/`-balance` (or `MAP_FILE`/`BALANCE_FILE`). `client/editor/Editor.gd`
+(`godot --path client editor/Editor.tscn`) paints terrain, places units/buildings,
+records actions, exports map + scenario JSON, and runs a scenario.
 
    **Creating tests:**
    - Write scenarios in JSON format (`maps/scenarios/*.json`)

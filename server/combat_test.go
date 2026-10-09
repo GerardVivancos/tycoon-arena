@@ -66,7 +66,7 @@ func orderAttack(s *GameServer, client *Client, targetId uint32, unitIds ...uint
 }
 
 // combatTick advances the simulation n ticks, mirroring gameTick's relevant
-// order (movement, then combat).
+// order (movement, then combat, then flush the events it queued).
 func combatTick(s *GameServer, n int) {
 	dt := 1.0 / float32(TickRate)
 	for i := 0; i < n; i++ {
@@ -79,6 +79,7 @@ func combatTick(s *GameServer, n int) {
 		}
 		s.processCombat()
 		s.mu.Unlock()
+		s.flushEvents()
 	}
 }
 

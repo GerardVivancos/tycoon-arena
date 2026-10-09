@@ -151,18 +151,73 @@ building attackers, and a "no units remaining" lose rule for `survival`.
 
 **Objective:** Prevent deadlocks/races as the mode layer grows.
 
-- [ ] **4.1** Avoid `eventBus.Emit` while holding `s.mu` (used at `main.go:425-449`,
-      `1878`, `1912`, etc.); document event ordering or queue events for after-unlock.
-- [ ] **4.2** Run `go test -race ./...`; fix any races; add a targeted test for the
-      win-condition path under concurrent load.
+- [x] **4.1** Eliminate `eventBus.Emit` under `s.mu` via a deferred queue: added
+      `s.eventQueue` + `queueEvent()` (call under lock) + `flushEvents()` (call
+      after unlock). Converted all 9 in-lock emits — tick resource generation
+      (`main.go`), `handleBuildCommand` (money/placed/created), `applyDamage`
+      (attacked/damaged/building-destroyed/entity-destroyed) — to `queueEvent`;
+      `gameTick` calls `flushEvents()` right after `s.mu.Unlock()`.
+      `grantMoneyToPlayer`/`endMatch` already emit post-unlock; the rule
+      ("never `Emit` under `s.mu`") is documented in code. ✅ (2025-10-09)
+- [x] **4.2** `go test -race ./...` clean (was already race-free; now guarded).
+      Added `concurrency_test.go`: `TestConcurrentTickAndMatchEnd` (tick loop +
+      concurrent grants + concurrent match-end checks hammer a live match, assert
+      single `match.ended`) and `TestEmitOutsideLockNoDeadlock` (a listener that
+      acquires `s.mu` proves the deferred-emit path can't deadlock). ✅ (2025-10-09)
 
-**Verify:** `go vet ./...`, `go test -race ./...` clean.
+**Verify:** `go vet ./...` clean, `go test -count=1 ./...` green, `go test -race
+./...` clean (2025-10-09).
+
+**Event-ordering guarantee:** game-state mutation happens under `s.mu`; events are
+queued and emitted after unlock, before `mode.OnTick`/`checkMatchEnd`. Listeners
+must not assume they hold `s.mu` (they may safely acquire it).
+
+---
+
+## Phase 5 — Scale & authoring tools
+
+**Objective:** bandwidth efficiency, data-driven balance, and a visual authoring
+tool. Fog of war was deferred to Phase 6.
+
+- [x] **5.0** Configurable map + data-driven balance: `-map`/`MAP_FILE` and
+      `-balance`/`BALANCE_FILE` flags (defaults `maps/default.json`,
+      `maps/balance.json`); `BalanceConfig` (`server/config.go`) loaded from
+      `maps/balance.json` with Go defaults (worker/generator/soldier) so tests
+      are unchanged without the file; per-unit HP/damage/range/cooldown/speed and
+      building cost/health/income/footprint now read from config; `welcome`
+      carries a `balance` block (start money, build cost, unit/building HP). ✅
+- [x] **5.1** Delta compression (broadcast-baseline v1): `SnapshotMessage.Removed`
+      added; changed-only entities on deltas with a `baselineTick` marker (0 =
+      full); `buildSnapshotLocked()` maintains the broadcast baseline, sends a full
+      snapshot on the first build, on client join (`forceFullSnapshot`), and every
+      `FullSnapshotInterval` (20) ticks to self-heal dropped packets; tiny players
+      map always full. Client `_on_snapshot_received` is delta-aware (applies
+      changed entities + explicit `removed`). `snapshot_test.go` covers full→delta,
+      periodic full, and join-force. ✅
+- [x] **5.2** New unit type: ranged `soldier` (120 HP / 15 dmg / range 3 / 15-tick
+      cooldown) defined purely in `BalanceConfig`; spawned via `StartingSoldiers`
+      (0 by default so the default match is unchanged; `maps/balance.json` sets 1);
+      `isAttackableTarget` is config-driven; client renders soldiers as units.
+      `soldier_combat_test.go` proves ranged hold-at-range, kill, and that stats
+      come from config; `attack_soldier` scenario validates the format end-to-end. ✅
+- [x] **5.3** Visual scenario editor (`client/editor/Editor.gd` + `Editor.tscn`):
+      paint terrain (grass/rock), place spawn points + scenario units/buildings,
+      record move/attack actions with a click-to-target flow, `Save Map`/
+      `Export Scenario` write `maps/*.json` + `maps/scenarios/*.json` in the exact
+      schemas `LoadMap`/the harness consume, and `Run Scenario` shells
+      `go -C server test -run TestAllScenarios/<name>`. Round-tripped via the
+      `attack_soldier` scenario. ✅
+
+**Verify:** `gofmt -l .` empty, `go vet ./...` clean, `go test -count=1 ./...`
+green (84), `go test -race -count=1 ./...` clean, `go run . -map ... -balance ...`
+smoke, and Godot `--check-only` on `GameController.gd` + `editor/Editor.gd`. ✅
 
 ---
 
 ## Out of scope (deferred)
-- Phase 5 optional features: delta compression (`baselineTick`/`LastAckTick`), fog of war,
-  unit balancing, visual scenario editor.
+- **Phase 6** fog of war: server-authoritative per-client visibility (omit entities
+  outside a client's vision radius), which composes with 5.1's per-client snapshot
+  path; gate behind a mode/feature flag so the default loop stays broadcast-full.
 
 ## Progress tracker
 - [x] Review complete (2025-10-09)
@@ -180,4 +235,13 @@ building attackers, and a "no units remaining" lose rule for `survival`.
       damage_taken/attacks_received/units_killed/units_lost wired; attack `unitIds`;
       client sends unitIds + enemy-unit targeting; +7 tests + unit_combat scenario,
       69 green. Note: harness fixed to record destroyed buildings & run combat on tick)
-- [ ] Phase 4 — concurrency hardening
+- [x] Phase 4 — concurrency hardening (done 2025-10-09: events queued under lock,
+      emitted after unlock via queueEvent/flushEvents — no more Emit-under-s.mu;
+      added concurrency tests incl. a deadlock guard; go test -race clean,
+      71 green)
+- [x] Phase 5 — scale & authoring tools (done 2025-10-10: `-map`/`-balance` flags +
+      data-driven `BalanceConfig`; delta-compressed snapshots (`Removed` +
+      `buildSnapshotLocked`, full on join/periodic); ranged `soldier` unit
+      (config-driven); visual scenario editor (`client/editor/`) + `attack_soldier`
+      scenario; +13 tests, 84 green, -race clean, Godot parse clean). Phase 6 fog
+      of war remains deferred.

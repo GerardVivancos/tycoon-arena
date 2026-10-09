@@ -1,0 +1,13 @@
+{
+  "startingMoney": 100,
+  "startingUnits": 5,
+  "startingSoldiers": 1,
+  "movementSpeed": 4.0,
+  "units": {
+    "worker": { "health": 100, "damage": 25, "range": 1, "intervalTicks": 20, "speed": 4.0 },
+    "soldier": { "health": 120, "damage": 15, "range": 3, "intervalTicks": 15, "speed": 3.5 }
+  },
+  "buildings": {
+    "generator": { "cost": 50, "health": 100, "income": 10.0, "width": 2, "height": 2 }
+  }
+}

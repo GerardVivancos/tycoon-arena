@@ -23,7 +23,7 @@ go test -v -run TestAllScenarios/navigate_around_rock
 
 ## Test Coverage
 
-### Unit Tests (68 tests)
+### Unit Tests (83 tests)
 
 **Pathfinding:**
 - `TestPathfindingAroundSingleRock` - Routes around 1 obstacle
@@ -90,12 +90,38 @@ go test -v -run TestAllScenarios/navigate_around_rock
 - `TestCannotAttackOwnUnit` - self-attack is rejected
 - `TestUnitDestroysEnemyBuilding` - worker destroys a generator (+ `buildings_destroyed`/`buildings_lost`)
 
-### Scenario Tests (3 tests)
+**Concurrency (2 tests)** — `server/concurrency_test.go` (run under `-race`):
+- `TestEmitOutsideLockNoDeadlock` - a listener that acquires `s.mu` proves events
+  are emitted after the lock is released (guards the Phase 4 deferred-emit path)
+- `TestConcurrentTickAndMatchEnd` - tick loop + concurrent money grants + concurrent
+  match-end checks hammer a live match; asserts no race and exactly one `match.ended`
+
+**Balance Config (6 tests)** — `server/balance_test.go`:
+- `TestDefaultBalanceConfig` - defaults reproduce the historical constants
+- `TestLoadBalanceConfigMissingFileUsesDefaults` - a missing `balance.json` is not an error
+- `TestLoadBalanceConfigOverrides` - JSON overrides for scalars/unit/building stats
+- `TestUnitSpeedFallback` - speed falls back to config then the const default
+- `TestBuildUsesBalanceCostAndHealth` - build cost/HP come from config (afford + unafford)
+- `TestBuildBalanceInfo` - `welcome.balance` surfaces costs/HP
+
+**Snapshot Deltas (4 tests)** — `server/snapshot_test.go`:
+- `TestEntityVisibleChanged` - only client-visible fields count (path/combat hidden)
+- `TestSnapshotFullThenDelta` - first full, empty delta when unchanged, changed-only on move, removed on delete
+- `TestSnapshotPeriodicFull` - a full snapshot is forced every `FullSnapshotInterval` ticks
+- `TestSnapshotForceFullOnJoin` - a join forces a full snapshot and clears the flag
+
+**Soldier / Ranged (3 tests)** — `server/soldier_combat_test.go`:
+- `TestSoldierAttacksFromRange` - holds at range and damages without closing to melee
+- `TestSoldierKillsEnemyUnit` - kills over cooldown ticks; `units_killed`/`units_lost`
+- `TestSoldierCombatIsConfigDriven` - shrinking `Range` in config makes it path first
+
+### Scenario Tests (4 tests)
 
 **JSON-based declarative tests:**
 - `navigate_around_rock` - Single unit pathfinds around obstacle
 - `formation_around_cluster` - Five units form up near blocked area
 - `unit_combat` - A worker is ordered to attack and destroys an enemy generator
+- `attack_soldier` - A ranged soldier destroys an enemy generator (config-driven Phase 5 unit)
 
 ---
 
@@ -106,6 +132,17 @@ go test -v -run TestAllScenarios/navigate_around_rock
 ```bash
 cd server
 go test -v
+```
+
+### Race Detector (Phase 4)
+
+The concurrency tests in `server/concurrency_test.go` are meant to run under the
+race detector (they also run in the normal suite, but `-race` is what makes
+`TestConcurrentTickAndMatchEnd` meaningful):
+
+```bash
+cd server
+go test -race -count=1 ./...
 ```
 
 **Expected output:**

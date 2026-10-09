@@ -3,6 +3,7 @@ package main
 import (
 	"container/heap"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"math"
@@ -32,22 +33,16 @@ const (
 
 	// Resource generation (money per second per building)
 	GeneratorIncome = 10.0
+
+	// Snapshot delta compression (Phase 5): broadcast a full snapshot this
+	// often (ticks) to bound staleness from dropped delta packets. Between
+	// fulls, only changed entities + removed ids are sent.
+	FullSnapshotInterval = 20
 )
 
-// combatStats describes how a unit type attacks (Phase 3). Buildings are
-// non-combatant and therefore have no entry here. Range is measured in tiles
-// using Manhattan distance to the target's footprint; interval is in ticks.
-type combatStats struct {
-	Damage        int32
-	Range         int
-	IntervalTicks uint64
-}
-
-// unitCombatStats is the per-type combat table. Keep in sync with unit types
-// created in handleHello / handleBuildCommand.
-var unitCombatStats = map[string]combatStats{
-	"worker": {Damage: 25, Range: 1, IntervalTicks: 20}, // melee: adjacent, ~1s cooldown @ 20Hz
-}
+// NOTE (Phase 5): per-unit combat/health and economy tuning now live in
+// BalanceConfig (see config.go / maps/balance.json). The consts above are the
+// defaults used when no balance file is present.
 
 type MessageType string
 
@@ -89,6 +84,18 @@ type WelcomeMessage struct {
 	ObjectiveText string `json:"objectiveText,omitempty"`
 	ShowTimer     bool   `json:"showTimer"`
 	ShowMoney     bool   `json:"showMoney"`
+
+	// Balance (Phase 5 data-driven tuning) so the client can show costs/HP
+	// without hardcoding them.
+	Balance BalanceInfo `json:"balance"`
+}
+
+// BalanceInfo is the client-facing subset of BalanceConfig (Phase 5).
+type BalanceInfo struct {
+	StartingMoney  float32          `json:"startingMoney"`
+	BuildingCost   int32            `json:"buildingCost"`
+	UnitHealth     map[string]int32 `json:"unitHealth,omitempty"`
+	BuildingHealth map[string]int32 `json:"buildingHealth,omitempty"`
 }
 
 type TerrainData struct {
@@ -139,8 +146,9 @@ type AttackCommand struct {
 
 type SnapshotMessage struct {
 	Tick         uint64            `json:"tick"`
-	BaselineTick uint64            `json:"baselineTick"` // For delta compression (0 = full snapshot)
-	Entities     []Entity          `json:"entities"`
+	BaselineTick uint64            `json:"baselineTick"` // 0 = full snapshot; else id of the tick this delta is relative to
+	Entities     []Entity          `json:"entities"`     // full list on a full snapshot; changed-only on a delta
+	Removed      []uint32          `json:"removed,omitempty"`
 	Players      map[string]Player `json:"players"`
 }
 
@@ -295,12 +303,23 @@ type GameServer struct {
 	mapData         *MapData           // Map configuration
 	eventBus        *EventBus          // Event system for game actions
 	stats           *StatisticsTracker // Statistics tracking
+	balance         BalanceConfig      // Data-driven gameplay tuning (Phase 5)
 
 	// Game mode / match state
 	gameMode    GameMode // Active game mode (nil until set; nil = no win conditions)
 	gameModeDef *GameModeDefinition
 	gameOver    bool // Match finalized; inputs rejected, joins rejected
 	winnerId    uint32
+
+	// Events queued while s.mu is held and emitted after the lock is released,
+	// so event listeners never run under the server lock (they may acquire it).
+	eventQueue []GameEvent
+
+	// Snapshot delta compression (Phase 5). snapshotBaseline mirrors the entity
+	// state clients were last sent; forceFullSnapshot forces a full snapshot on
+	// the next build (e.g. right after a client joins).
+	snapshotBaseline  map[uint32]Entity
+	forceFullSnapshot bool
 }
 
 func NewGameServer() *GameServer {
@@ -314,6 +333,7 @@ func NewGameServer() *GameServer {
 		inputQueue:      make([]QueuedInput, 0),
 		eventBus:        NewEventBus(),
 		stats:           NewStatisticsTracker(),
+		balance:         DefaultBalanceConfig(),
 	}
 
 	// Wire up statistics tracking to events
@@ -410,6 +430,101 @@ func (s *GameServer) grantMoneyToPlayer(playerID uint32, amount float32, reason 
 			"reason":   reason,
 		},
 	})
+}
+
+// queueEvent appends an event to be emitted after the current critical section
+// releases s.mu. Callers MUST hold s.mu. Use this instead of eventBus.Emit
+// whenever mutating state under the server lock, so listeners never run while
+// s.mu is held and are free to acquire s.mu themselves (prevents deadlock and
+// keeps the tick loop from serializing on listener work).
+func (s *GameServer) queueEvent(e GameEvent) {
+	s.eventQueue = append(s.eventQueue, e)
+}
+
+// flushEvents emits all queued events through the event bus. Must be called
+// WITHOUT s.mu held. It drains the queue under a short lock so emission is
+// decoupled from any later gameTick.
+//
+// RULE: never call eventBus.Emit directly while holding s.mu — use queueEvent
+// and let gameTick call flushEvents after unlocking. (grantMoneyToPlayer and
+// endMatch already emit directly because they release s.mu first.)
+func (s *GameServer) flushEvents() {
+	s.mu.Lock()
+	pending := s.eventQueue
+	s.eventQueue = nil
+	s.mu.Unlock()
+
+	for _, e := range pending {
+		s.eventBus.Emit(e)
+	}
+}
+
+// entityVisibleChanged reports whether two entities differ in any field sent to
+// the client (the json:"-" pathfinding/combat fields are ignored). Id is assumed
+// equal (compared by map key).
+func entityVisibleChanged(a, b Entity) bool {
+	return a.OwnerId != b.OwnerId ||
+		a.Type != b.Type ||
+		a.TileX != b.TileX ||
+		a.TileY != b.TileY ||
+		a.TargetTileX != b.TargetTileX ||
+		a.TargetTileY != b.TargetTileY ||
+		a.MoveProgress != b.MoveProgress ||
+		a.Health != b.Health ||
+		a.MaxHealth != b.MaxHealth ||
+		a.FootprintWidth != b.FootprintWidth ||
+		a.FootprintHeight != b.FootprintHeight
+}
+
+// buildSnapshotLocked produces the next snapshot (Phase 5 delta compression)
+// and advances the server's broadcast baseline to the current state. It MUST be
+// called with s.mu held. A full snapshot (BaselineTick 0) is sent when forced,
+// on the first build, or every FullSnapshotInterval ticks; otherwise a delta
+// carries changed entities + removed ids. The (tiny) players map is always full.
+func (s *GameServer) buildSnapshotLocked() SnapshotMessage {
+	// Current state (copies safe to keep as the baseline).
+	current := make(map[uint32]Entity, len(s.entities))
+	all := make([]Entity, 0, len(s.entities))
+	for _, e := range s.entities {
+		cp := *e
+		cp.Path = nil // never sent to clients; don't retain in baseline
+		current[e.Id] = cp
+		all = append(all, cp)
+	}
+	players := make(map[string]Player, len(s.clients))
+	for id, client := range s.clients {
+		players[fmt.Sprintf("%d", id)] = Player{Id: id, Name: client.Name, Money: client.Money}
+	}
+
+	wantFull := s.forceFullSnapshot || s.snapshotBaseline == nil ||
+		(FullSnapshotInterval > 0 && s.tick%FullSnapshotInterval == 0)
+
+	snap := SnapshotMessage{Tick: s.tick, Players: players}
+	if wantFull {
+		snap.BaselineTick = 0
+		snap.Entities = all
+	} else {
+		changed := make([]Entity, 0, len(all))
+		for _, e := range all {
+			if prev, ok := s.snapshotBaseline[e.Id]; !ok || entityVisibleChanged(prev, e) {
+				changed = append(changed, e)
+			}
+		}
+		removed := make([]uint32, 0)
+		for id := range s.snapshotBaseline {
+			if _, ok := current[id]; !ok {
+				removed = append(removed, id)
+			}
+		}
+		snap.BaselineTick = s.tick
+		snap.Entities = changed
+		snap.Removed = removed
+	}
+
+	// Baseline advances to the current state: clients now hold everything.
+	s.snapshotBaseline = current
+	s.forceFullSnapshot = false
+	return snap
 }
 
 // checkMatchEnd evaluates the active game mode's win and lose conditions and
@@ -679,16 +794,16 @@ func (s *GameServer) gameTick() {
 	// Resolve combat: units move into range of their target and attack
 	s.processCombat()
 
-	// Generate resources from buildings
+	// Generate resources from buildings (income from balance config)
 	for _, entity := range s.entities {
-		if entity.Type == "generator" {
+		if bb, ok := s.buildingBalance(entity.Type); ok && bb.Income > 0 {
 			if client, ok := s.clients[entity.OwnerId]; ok {
 				oldMoney := client.Money
-				incomeAmount := GeneratorIncome * deltaTime
+				incomeAmount := bb.Income * deltaTime
 				client.Money += incomeAmount
 
-				// Emit resource generation event
-				s.eventBus.Emit(GameEvent{
+				// Emit resource generation event (queued; flushed after unlock)
+				s.queueEvent(GameEvent{
 					Type:      EventResourceGenerated,
 					Timestamp: time.Now(),
 					Tick:      s.tick,
@@ -696,12 +811,12 @@ func (s *GameServer) gameTick() {
 					TargetID:  entity.Id,
 					Data: map[string]any{
 						"amount":       incomeAmount,
-						"buildingType": "generator",
+						"buildingType": entity.Type,
 					},
 				})
 
-				// Emit money changed event
-				s.eventBus.Emit(GameEvent{
+				// Emit money changed event (queued; flushed after unlock)
+				s.queueEvent(GameEvent{
 					Type:      EventPlayerMoneyChanged,
 					Timestamp: time.Now(),
 					Tick:      s.tick,
@@ -717,29 +832,14 @@ func (s *GameServer) gameTick() {
 		}
 	}
 
-	// Create snapshot
-	entities := make([]Entity, 0, len(s.entities))
-	for _, entity := range s.entities {
-		entities = append(entities, *entity)
-	}
-
-	// Create player data
-	players := make(map[string]Player)
-	for id, client := range s.clients {
-		players[fmt.Sprintf("%d", id)] = Player{
-			Id:    id,
-			Name:  client.Name,
-			Money: client.Money,
-		}
-	}
-
-	snapshot := SnapshotMessage{
-		Tick:         s.tick,
-		BaselineTick: 0, // TODO: Delta compression - always full snapshot for now
-		Entities:     entities,
-		Players:      players,
-	}
+	// Build the snapshot (full or delta) and advance the broadcast baseline.
+	// Called under the lock so it observes a consistent state.
+	snapshot := s.buildSnapshotLocked()
 	s.mu.Unlock()
+
+	// Emit events that were queued under the lock (resource generation, combat,
+	// build), so listeners never run while s.mu is held.
+	s.flushEvents()
 
 	// Send snapshot to all clients (without holding lock)
 	s.broadcastMessage(Message{
@@ -816,40 +916,46 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 	clientId := s.nextId
 	s.nextId++
 
-	// Spawn starting units for this player (5 workers)
+	// Spawn starting units for this player (counts + HP from balance config).
 	// Assign team based on client number (team 0 for first client, team 1 for second, etc.)
 	teamId := len(s.clients)
 	spawnBaseTileX, spawnBaseTileY := s.getSpawnPosition(teamId)
 
-	ownedUnits := make([]uint32, 0, 5)
-	for i := 0; i < 5; i++ {
+	startUnits := s.balance.StartingUnits
+	if startUnits <= 0 {
+		startUnits = 5
+	}
+	startSoldiers := s.balance.StartingSoldiers
+	if startSoldiers < 0 {
+		startSoldiers = 0
+	}
+
+	ownedUnits := make([]uint32, 0, startUnits+startSoldiers)
+
+	// Workers in a horizontal line at the spawn base.
+	for i := 0; i < startUnits; i++ {
 		entityId := s.nextId
 		s.nextId++
-
-		// Spawn workers in horizontal line
-		workerX := spawnBaseTileX + i
-		workerY := spawnBaseTileY
-
-		// Ensure spawn position is passable (fallback to base position if not)
-		if !s.isTilePassable(workerX, workerY) {
-			workerX = spawnBaseTileX
-			workerY = spawnBaseTileY
+		x, y := spawnBaseTileX+i, spawnBaseTileY
+		if !s.isTilePassable(x, y) {
+			x, y = spawnBaseTileX, spawnBaseTileY
 		}
+		unit := s.newUnitEntity("worker", clientId, entityId, x, y)
+		s.entities[entityId] = unit
+		ownedUnits = append(ownedUnits, entityId)
+	}
 
-		worker := &Entity{
-			Id:           entityId,
-			OwnerId:      clientId,
-			Type:         "worker",
-			TileX:        workerX,
-			TileY:        workerY,
-			TargetTileX:  workerX,
-			TargetTileY:  workerY,
-			MoveProgress: 0.0,
-			Health:       100,
-			MaxHealth:    100,
+	// Soldiers (Phase 5, config-driven; 0 by default) in a second line behind
+	// the workers.
+	for i := 0; i < startSoldiers; i++ {
+		entityId := s.nextId
+		s.nextId++
+		x, y := spawnBaseTileX+i, spawnBaseTileY+1
+		if !s.isTilePassable(x, y) {
+			x, y = spawnBaseTileX, spawnBaseTileY
 		}
-
-		s.entities[entityId] = worker
+		unit := s.newUnitEntity("soldier", clientId, entityId, x, y)
+		s.entities[entityId] = unit
 		ownedUnits = append(ownedUnits, entityId)
 	}
 
@@ -859,14 +965,18 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 		Addr:       clientAddr,
 		LastSeen:   time.Now(),
 		OwnedUnits: ownedUnits,
-		Money:      StartingMoney,
+		Money:      s.balance.StartingMoney,
 	}
 
 	s.clients[clientId] = client
 
+	// Force the next broadcast to be a full snapshot so the newly-joined
+	// client (and everyone) is synced to a fresh baseline (Phase 5 deltas).
+	s.forceFullSnapshot = true
+
 	// Seed the money_current statistic so lose conditions (e.g. bankruptcy)
 	// don't false-positive before the first income/build event fires.
-	s.stats.Set(clientId, StatMoneyCurrent, float64(StartingMoney))
+	s.stats.Set(clientId, StatMoneyCurrent, float64(s.balance.StartingMoney))
 
 	log.Printf("Client %d (%s) connected from %s with %d workers", clientId, hello.PlayerName, clientAddr.String(), len(ownedUnits))
 
@@ -894,6 +1004,7 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 			DefaultType: s.mapData.DefaultTerrain.Type,
 			Tiles:       terrainTiles,
 		},
+		Balance: s.buildBalanceInfo(),
 	}
 
 	// Attach active game-mode UI config so the client can show objective/timer
@@ -1066,8 +1177,8 @@ func (s *GameServer) updateEntityMovement(entity *Entity, deltaTime float32) {
 	}
 
 	// Calculate movement progress increment
-	// MovementSpeed is tiles/second, so progress per tick = (tiles/sec) * deltaTime / 1 tile
-	progressIncrement := MovementSpeed * deltaTime
+	// unitSpeed is tiles/second, so progress per tick = (tiles/sec) * deltaTime / 1 tile
+	progressIncrement := s.unitSpeed(entity.Type) * deltaTime
 	entity.MoveProgress += progressIncrement
 
 	// Check if reached waypoint
@@ -2138,18 +2249,26 @@ func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 	tileX := int(tileXFloat)
 	tileY := int(tileYFloat)
 
-	// Validate building type and get footprint
-	var footprintWidth, footprintHeight int
-	switch buildingType {
-	case "generator":
-		footprintWidth = 2
-		footprintHeight = 2
-	default:
+	// Validate building type and read footprint/cost/HP from balance config.
+	bb, ok := s.buildingBalance(buildingType)
+	if !ok {
 		return // Unknown building type
+	}
+	footprintWidth := bb.Width
+	footprintHeight := bb.Height
+	if footprintWidth <= 0 {
+		footprintWidth = 1
+	}
+	if footprintHeight <= 0 {
+		footprintHeight = 1
+	}
+	buildingHP := bb.Health
+	if buildingHP <= 0 {
+		buildingHP = 100
 	}
 
 	// Check if player has enough money
-	if client.Money < BuildingCost {
+	if client.Money < float32(bb.Cost) {
 		return
 	}
 
@@ -2170,10 +2289,10 @@ func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 
 	// Deduct money and create building
 	oldMoney := client.Money
-	client.Money -= BuildingCost
+	client.Money -= float32(bb.Cost)
 
-	// Emit money changed event
-	s.eventBus.Emit(GameEvent{
+	// Emit money changed event (queued; flushed after unlock)
+	s.queueEvent(GameEvent{
 		Type:      EventPlayerMoneyChanged,
 		Timestamp: time.Now(),
 		Tick:      s.tick,
@@ -2181,7 +2300,7 @@ func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 		Data: map[string]any{
 			"oldMoney": oldMoney,
 			"newMoney": client.Money,
-			"delta":    -BuildingCost,
+			"delta":    -bb.Cost,
 			"reason":   "building_cost",
 		},
 	})
@@ -2198,16 +2317,16 @@ func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 		TargetTileX:     tileX,
 		TargetTileY:     tileY,
 		MoveProgress:    0.0,
-		Health:          100,
-		MaxHealth:       100,
+		Health:          buildingHP,
+		MaxHealth:       buildingHP,
 		FootprintWidth:  footprintWidth,
 		FootprintHeight: footprintHeight,
 	}
 
 	s.entities[entityId] = building
 
-	// Emit building placed event
-	s.eventBus.Emit(GameEvent{
+	// Emit building placed event (queued; flushed after unlock)
+	s.queueEvent(GameEvent{
 		Type:      EventBuildingPlaced,
 		Timestamp: time.Now(),
 		Tick:      s.tick,
@@ -2220,8 +2339,8 @@ func (s *GameServer) handleBuildCommand(cmd Command, client *Client) {
 		},
 	})
 
-	// Emit entity created event
-	s.eventBus.Emit(GameEvent{
+	// Emit entity created event (queued; flushed after unlock)
+	s.queueEvent(GameEvent{
 		Type:      EventEntityCreated,
 		Timestamp: time.Now(),
 		Tick:      s.tick,
@@ -2256,7 +2375,7 @@ func (s *GameServer) handleAttackCommand(cmd Command, client *Client) {
 	if !exists || target.OwnerId == client.Id {
 		return
 	}
-	if !isAttackable(target.Type) {
+	if !s.isAttackableTarget(target.Type) {
 		return
 	}
 
@@ -2268,7 +2387,7 @@ func (s *GameServer) handleAttackCommand(cmd Command, client *Client) {
 		if !ok || attacker.OwnerId != client.Id {
 			continue
 		}
-		if _, canAttack := unitCombatStats[attacker.Type]; !canAttack {
+		if _, canAttack := s.unitBalance(attacker.Type); !canAttack {
 			continue
 		}
 		attacker.AttackTargetId = targetId
@@ -2282,9 +2401,20 @@ func (s *GameServer) handleAttackCommand(cmd Command, client *Client) {
 	log.Printf("Client %d ordered %d unit(s) to attack entity %d", client.Id, assigned, targetId)
 }
 
-// isAttackable reports whether entities of the given type can be targeted.
-func isAttackable(entityType string) bool {
-	return entityType == "worker" || entityType == "player" || entityType == "generator"
+// isAttackableTarget reports whether entities of the given type can be targeted
+// for attack (Phase 5): any configured unit type, any configured building, or
+// the legacy "player" type.
+func (s *GameServer) isAttackableTarget(entityType string) bool {
+	if entityType == "player" {
+		return true
+	}
+	if _, ok := s.unitBalance(entityType); ok {
+		return true
+	}
+	if _, ok := s.buildingBalance(entityType); ok {
+		return true
+	}
+	return false
 }
 
 // resolveAttackers returns the attacking unit ids: those in rawUnitIds (JSON
@@ -2311,7 +2441,7 @@ func (s *GameServer) resolveAttackers(client *Client, rawUnitIds any) []uint32 {
 	ids := make([]uint32, 0, len(client.OwnedUnits))
 	for _, id := range client.OwnedUnits {
 		if e, ok := s.entities[id]; ok && e.OwnerId == client.Id {
-			if _, canAttack := unitCombatStats[e.Type]; canAttack {
+			if _, canAttack := s.unitBalance(e.Type); canAttack {
 				ids = append(ids, id)
 			}
 		}
@@ -2334,7 +2464,7 @@ func (s *GameServer) processCombat() {
 		if _, alive := s.entities[attacker.Id]; !alive {
 			continue
 		}
-		cs, ok := unitCombatStats[attacker.Type]
+		cs, ok := s.unitBalance(attacker.Type)
 		if !ok {
 			attacker.AttackTargetId = 0
 			continue
@@ -2375,7 +2505,7 @@ func (s *GameServer) applyDamage(attackerID, targetID uint32, damage int32) {
 	target.Health -= damage
 	targetOwner := target.OwnerId
 
-	s.eventBus.Emit(GameEvent{
+	s.queueEvent(GameEvent{
 		Type:      EventUnitAttacked,
 		Timestamp: time.Now(),
 		Tick:      s.tick,
@@ -2387,7 +2517,7 @@ func (s *GameServer) applyDamage(attackerID, targetID uint32, damage int32) {
 		},
 	})
 
-	s.eventBus.Emit(GameEvent{
+	s.queueEvent(GameEvent{
 		Type:      EventEntityDamaged,
 		Timestamp: time.Now(),
 		Tick:      s.tick,
@@ -2406,7 +2536,7 @@ func (s *GameServer) applyDamage(attackerID, targetID uint32, damage int32) {
 	}
 
 	if target.Type == "generator" {
-		s.eventBus.Emit(GameEvent{
+		s.queueEvent(GameEvent{
 			Type:      EventBuildingDestroyed,
 			Timestamp: time.Now(),
 			Tick:      s.tick,
@@ -2419,7 +2549,7 @@ func (s *GameServer) applyDamage(attackerID, targetID uint32, damage int32) {
 		})
 	}
 
-	s.eventBus.Emit(GameEvent{
+	s.queueEvent(GameEvent{
 		Type:      EventEntityDestroyed,
 		Timestamp: time.Now(),
 		Tick:      s.tick,
@@ -2579,15 +2709,37 @@ func (s *GameServer) marshalData(data any) json.RawMessage {
 }
 
 func main() {
+	// Configurable map + balance (Phase 5). Flags win over env vars; both are
+	// relative to the server directory (main runs from server/).
+	mapFile := os.Getenv("MAP_FILE")
+	if mapFile == "" {
+		mapFile = "../maps/default.json"
+	}
+	balanceFile := os.Getenv("BALANCE_FILE")
+	if balanceFile == "" {
+		balanceFile = "../maps/balance.json"
+	}
+	flag.StringVar(&mapFile, "map", mapFile, "path to the map JSON file (relative to server dir)")
+	flag.StringVar(&balanceFile, "balance", balanceFile, "path to the balance JSON file (missing file uses defaults)")
+	flag.Parse()
+
 	// Load map (relative to server directory)
-	mapData, err := LoadMap("../maps/default.json")
+	mapData, err := LoadMap(mapFile)
 	if err != nil {
-		log.Fatalf("Failed to load map: %v", err)
+		log.Fatalf("Failed to load map %s: %v", mapFile, err)
 	}
 
 	// Create server and assign map
 	server := NewGameServer()
 	server.mapData = mapData
+
+	// Load balance config (defaults when the file is absent)
+	if bal, err := LoadBalanceConfig(balanceFile); err != nil {
+		log.Printf("Balance config: %v (using built-in defaults)", err)
+	} else {
+		server.balance = bal
+		log.Printf("Loaded balance config from %s", balanceFile)
+	}
 
 	// Load default game mode (relative to server directory) and start the match
 	mode, err := LoadGameModeAndCreate("game_modes/resource_race.json")

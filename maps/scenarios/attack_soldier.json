@@ -1,0 +1,38 @@
+{
+  "name": "Soldier Destroys Enemy Generator (Ranged)",
+  "map": "test_single_rock.json",
+  "description": "A soldier destroys an enemy generator from range using config-driven combat (Phase 5); mirrors the visual editor's scenario output",
+
+  "setup": {
+    "units": [
+      {"id": "shooter", "team": 0, "type": "soldier", "position": [3, 2], "label": "S"}
+    ],
+    "buildings": [
+      {"id": "target", "team": 1, "type": "generator", "position": [5, 2], "label": "T"}
+    ]
+  },
+
+  "actions": [
+    {
+      "tick": 0,
+      "type": "attack",
+      "unitIds": ["shooter"],
+      "targetId": "target"
+    }
+  ],
+
+  "expectations": {
+    "maxTicks": 300,
+    "finalState": {
+      "units": [
+        {"id": "shooter", "positionNear": [3, 2], "tolerance": 2, "state": "stopped"}
+      ],
+      "buildings": [
+        {"id": "target", "position": [5, 2], "exists": false}
+      ]
+    },
+    "constraints": {
+      "allStopped": true
+    }
+  }
+}

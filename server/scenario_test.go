@@ -95,23 +95,12 @@ func (a *TestGameServerAdapter) LoadMap(path string) error {
 	return nil
 }
 
-// SpawnUnit creates a unit at the specified position
+// SpawnUnit creates a unit at the specified position (HP from balance config).
 func (a *TestGameServerAdapter) SpawnUnit(unitType string, team int, x, y int) uint32 {
 	entityID := a.server.nextId
 	a.server.nextId++
 
-	entity := &Entity{
-		Id:           entityID,
-		OwnerId:      uint32(team), // Use team as owner ID
-		Type:         unitType,
-		TileX:        x,
-		TileY:        y,
-		TargetTileX:  x,
-		TargetTileY:  y,
-		MoveProgress: 0.0,
-		Health:       100,
-		MaxHealth:    100,
-	}
+	entity := a.server.newUnitEntity(unitType, uint32(team), entityID, x, y)
 
 	a.server.entities[entityID] = entity
 	a.entityIDMap[entityID] = entity
@@ -119,13 +108,25 @@ func (a *TestGameServerAdapter) SpawnUnit(unitType string, team int, x, y int) u
 	return entityID
 }
 
-// SpawnBuilding creates a building at the specified position
+// SpawnBuilding creates a building at the specified position (footprint/HP from
+// balance config when known, else a 2x2 default).
 func (a *TestGameServerAdapter) SpawnBuilding(buildingType string, team int, x, y int) uint32 {
 	entityID := a.server.nextId
 	a.server.nextId++
 
-	footprintWidth := 2
-	footprintHeight := 2
+	footprintWidth, footprintHeight := 2, 2
+	hp := int32(100)
+	if bb, ok := a.server.buildingBalance(buildingType); ok {
+		if bb.Width > 0 {
+			footprintWidth = bb.Width
+		}
+		if bb.Height > 0 {
+			footprintHeight = bb.Height
+		}
+		if bb.Health > 0 {
+			hp = bb.Health
+		}
+	}
 
 	entity := &Entity{
 		Id:              entityID,
@@ -136,8 +137,8 @@ func (a *TestGameServerAdapter) SpawnBuilding(buildingType string, team int, x, 
 		TargetTileX:     x,
 		TargetTileY:     y,
 		MoveProgress:    0.0,
-		Health:          100,
-		MaxHealth:       100,
+		Health:          hp,
+		MaxHealth:       hp,
 		FootprintWidth:  footprintWidth,
 		FootprintHeight: footprintHeight,
 	}
@@ -153,15 +154,19 @@ func (a *TestGameServerAdapter) Tick() {
 	// Update formation followers to maintain formation shape
 	a.server.tickFormations()
 
-	// Process movement for all entities
+	// Process movement for all moveable units (any configured unit type, plus
+	// the legacy worker/unit/player labels)
 	for _, entity := range a.server.entities {
-		if entity.Type == "worker" || entity.Type == "unit" {
+		if a.server.isUnitType(entity.Type) {
 			a.server.updateEntityMovement(entity, a.deltaTime)
 		}
 	}
 
 	// Resolve combat (move into range + apply damage on cooldown)
 	a.server.processCombat()
+
+	// Emit events queued under the lock (combat, etc.)
+	a.server.flushEvents()
 
 	a.server.tick++
 }
