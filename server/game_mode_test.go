@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"testing"
+	"time"
 )
 
 func TestLoadGameMode(t *testing.T) {
@@ -54,43 +56,55 @@ func TestNewJSONGameMode(t *testing.T) {
 	}
 }
 
+// addTestClient registers a client on a non-started server (deterministic).
+func addTestClient(t *testing.T, server *GameServer, id uint32) {
+	t.Helper()
+	server.mu.Lock()
+	server.clients[id] = &Client{Id: id, Name: fmt.Sprintf("Player%d", id), Money: 100, LastSeen: time.Now()}
+	server.mu.Unlock()
+}
+
+// newTestMatchContext builds a MatchContext for unit tests.
+func newTestMatchContext(server *GameServer, mode *JSONGameMode, tick uint64) *MatchContext {
+	return &MatchContext{
+		Server:   server,
+		Stats:    server.stats,
+		EventBus: server.eventBus,
+		Mode:     mode.definition,
+		Tick:     tick,
+	}
+}
+
 func TestGameModeWinCondition(t *testing.T) {
-	// Create game mode
+	// resource_race win: money_current(self) >= resource_goal (500)
 	mode, err := LoadGameModeAndCreate("game_modes/resource_race.json")
 	if err != nil {
 		t.Fatalf("Failed to create game mode: %v", err)
 	}
 
-	// Create mock server and stats
 	server := NewGameServer()
+	addTestClient(t, server, 1)
+	addTestClient(t, server, 2)
 	stats := server.stats
+	stats.Set(1, StatMoneyCurrent, 400.0)
+	stats.Set(2, StatMoneyCurrent, 400.0)
 
-	// Set up a player who hasn't won yet
-	stats.Set(0, StatMoneyCurrent, 400.0)
+	ctx := newTestMatchContext(server, mode, 100)
 
-	ctx := &MatchContext{
-		Server:   server,
-		Stats:    stats,
-		EventBus: server.eventBus,
-		Mode:     mode.definition,
-		Tick:     100,
+	// Neither player is at the goal yet
+	if result := mode.CheckWinConditions(ctx); result.HasWinner {
+		t.Error("Expected no winner when both players below goal")
 	}
 
-	// Check win conditions - should not have a winner
+	// Player 2 reaches the goal
+	stats.Set(2, StatMoneyCurrent, 500.0)
 	result := mode.CheckWinConditions(ctx)
-	if result.HasWinner {
-		t.Error("Expected no winner when money < goal")
-	}
-
-	// Set player money to winning amount
-	stats.Set(0, StatMoneyCurrent, 500.0)
-
-	// Check win conditions - should have a winner
-	result = mode.CheckWinConditions(ctx)
 	if !result.HasWinner {
-		t.Error("Expected a winner when money >= goal")
+		t.Fatal("Expected a winner when player 2 reaches goal")
 	}
-
+	if result.WinnerID != 2 {
+		t.Errorf("Expected winner 2, got %d", result.WinnerID)
+	}
 	if result.ConditionID != "resource_victory" {
 		t.Errorf("Expected condition ID 'resource_victory', got '%s'", result.ConditionID)
 	}
@@ -167,7 +181,7 @@ func TestGameModeStatistics(t *testing.T) {
 }
 
 func TestSurvivalGameMode(t *testing.T) {
-	// Test loading survival mode
+	// survival win: total_buildings(global) == buildings_placed(self)
 	mode, err := LoadGameModeAndCreate("game_modes/survival.json")
 	if err != nil {
 		t.Fatalf("Failed to load survival mode: %v", err)
@@ -178,28 +192,35 @@ func TestSurvivalGameMode(t *testing.T) {
 	}
 
 	server := NewGameServer()
+	addTestClient(t, server, 1)
+	addTestClient(t, server, 2)
 	stats := server.stats
 
-	// Simulate a scenario where one player has destroyed all enemy buildings
-	stats.Set(0, StatBuildingsPlaced, 5.0)
-	stats.SetGlobal(StatGlobalTotalBuildings, 5.0) // Only player 0's buildings remain
+	ctx := newTestMatchContext(server, mode, 500)
 
-	ctx := &MatchContext{
-		Server:   server,
-		Stats:    stats,
-		EventBus: server.eventBus,
-		Mode:     mode.definition,
-		Tick:     500,
+	// Buildings split between two players -> no sole survivor yet
+	stats.SetGlobal(StatGlobalTotalBuildings, 5.0)
+	stats.Set(1, StatBuildingsPlaced, 3.0)
+	stats.Set(2, StatBuildingsPlaced, 2.0)
+	if r := mode.CheckWinConditions(ctx); r.HasWinner {
+		t.Error("Expected no winner while buildings are split")
 	}
 
+	// Player 1 owns all remaining buildings -> sole survivor
+	stats.Set(1, StatBuildingsPlaced, 5.0)
+	stats.Set(2, StatBuildingsPlaced, 0.0)
 	result := mode.CheckWinConditions(ctx)
 	if !result.HasWinner {
-		t.Error("Expected a winner in survival mode when only one player has buildings")
+		t.Fatal("Expected a winner when one player owns all buildings")
+	}
+	if result.WinnerID != 1 {
+		t.Errorf("Expected winner 1, got %d", result.WinnerID)
 	}
 }
 
 func TestTimedRaceGameMode(t *testing.T) {
-	// Test loading timed race mode
+	// timed_race win: match_duration_ticks(global) >= time_limit_ticks (12000),
+	// winner = highest_money
 	mode, err := LoadGameModeAndCreate("game_modes/timed_race.json")
 	if err != nil {
 		t.Fatalf("Failed to load timed race mode: %v", err)
@@ -210,30 +231,31 @@ func TestTimedRaceGameMode(t *testing.T) {
 	}
 
 	server := NewGameServer()
+	addTestClient(t, server, 1)
+	addTestClient(t, server, 2)
 	stats := server.stats
+	stats.Set(1, StatMoneyCurrent, 100.0)
+	stats.Set(2, StatMoneyCurrent, 300.0) // richer
+
+	ctx := newTestMatchContext(server, mode, 10000)
 
 	// Time hasn't run out yet
 	stats.SetGlobal(StatGlobalMatchDurationTicks, 10000.0)
-
-	ctx := &MatchContext{
-		Server:   server,
-		Stats:    stats,
-		EventBus: server.eventBus,
-		Mode:     mode.definition,
-		Tick:     10000,
-	}
-
-	result := mode.CheckWinConditions(ctx)
-	if result.HasWinner {
+	if r := mode.CheckWinConditions(ctx); r.HasWinner {
 		t.Error("Expected no winner before time limit reached")
 	}
 
-	// Time has run out
+	// Time has run out -> richest player (2) wins
 	stats.SetGlobal(StatGlobalMatchDurationTicks, 12000.0)
-
-	result = mode.CheckWinConditions(ctx)
+	result := mode.CheckWinConditions(ctx)
 	if !result.HasWinner {
-		t.Error("Expected a winner when time limit reached")
+		t.Fatal("Expected a winner when time limit reached")
+	}
+	if result.WinnerID != 2 {
+		t.Errorf("Expected highest-money winner 2, got %d", result.WinnerID)
+	}
+	if result.ConditionID != "time_limit_reached" {
+		t.Errorf("Expected condition ID 'time_limit_reached', got '%s'", result.ConditionID)
 	}
 }
 
@@ -288,4 +310,172 @@ func TestGameModeLifecycleHooks(t *testing.T) {
 	mode.OnMatchEnding(ctx, "test")
 	mode.OnMatchEnded(ctx)
 	mode.OnPlayerLeft(ctx, 1)
+}
+
+func TestLoseConditionLastPlayerStanding(t *testing.T) {
+	// resource_race lose: money_current(self) <= 0 AND buildings_placed(self) == 0
+	mode, err := LoadGameModeAndCreate("game_modes/resource_race.json")
+	if err != nil {
+		t.Fatalf("Failed to create game mode: %v", err)
+	}
+
+	server := NewGameServer()
+	server.setGameMode(mode, mode.definition)
+	addTestClient(t, server, 1)
+	addTestClient(t, server, 2)
+
+	// Player 1 healthy (has money), player 2 broke with no buildings
+	server.stats.Set(1, StatMoneyCurrent, 100.0)
+	server.stats.Set(1, StatBuildingsPlaced, 1.0)
+	// player 2 defaults: money 0, buildings 0 -> losing
+
+	server.checkMatchEnd()
+
+	if !server.gameOver {
+		t.Fatal("Expected match to end with one player losing")
+	}
+	if server.winnerId != 1 {
+		t.Fatalf("Expected surviving player 1 to win, got %d", server.winnerId)
+	}
+}
+
+func TestLoseConditionFreshPlayerNotBroke(t *testing.T) {
+	// A freshly-joined player has money_current seeded (not 0) so the
+	// bankruptcy rule must not fire immediately.
+	mode, err := LoadGameModeAndCreate("game_modes/resource_race.json")
+	if err != nil {
+		t.Fatalf("Failed to create game mode: %v", err)
+	}
+
+	server := NewGameServer()
+	server.setGameMode(mode, mode.definition)
+	addTestClient(t, server, 1)
+	addTestClient(t, server, 2)
+	server.stats.Set(1, StatMoneyCurrent, 100.0)
+	server.stats.Set(2, StatMoneyCurrent, 100.0)
+
+	server.checkMatchEnd()
+
+	if server.gameOver {
+		t.Fatal("Match must not end while both players are solvent")
+	}
+}
+
+func TestPeriodicGrantResources(t *testing.T) {
+	def := &GameModeDefinition{
+		ID:         "grant_test",
+		Name:       "Grant Test",
+		Parameters: map[string]any{},
+		PeriodicChecks: []PeriodicCheck{
+			{
+				Name:          "grant",
+				IntervalTicks: 1,
+				Action: map[string]any{
+					"type":                "grant_resources",
+					"amount_per_building": float64(10),
+					"building_type":       "generator",
+				},
+			},
+		},
+	}
+	mode, err := NewJSONGameMode(def)
+	if err != nil {
+		t.Fatalf("build mode: %v", err)
+	}
+
+	server := NewGameServer()
+	addTestClient(t, server, 1) // has 2 generators
+	addTestClient(t, server, 2) // has none
+	server.mu.Lock()
+	server.entities[100] = &Entity{Id: 100, OwnerId: 1, Type: "generator", FootprintWidth: 2, FootprintHeight: 2}
+	server.entities[101] = &Entity{Id: 101, OwnerId: 1, Type: "generator", FootprintWidth: 2, FootprintHeight: 2}
+	server.mu.Unlock()
+	server.stats.Set(1, StatMoneyCurrent, 100.0)
+	server.stats.Set(2, StatMoneyCurrent, 100.0)
+
+	ctx := newTestMatchContext(server, mode, 1)
+	mode.OnTick(ctx)
+
+	// Player 1: 2 generators * $10 = $20
+	if got := server.clients[1].Money; got != 120 {
+		t.Errorf("expected player 1 money 120, got %v", got)
+	}
+	if got := server.stats.Get(1, StatMoneyCurrent); got != 120 {
+		t.Errorf("expected money_current stat synced to 120, got %v", got)
+	}
+	if got := server.stats.Get(1, StatResourcesGenerated); got != 20 {
+		t.Errorf("expected resources_generated 20, got %v", got)
+	}
+	// Player 2: no generators -> unchanged
+	if got := server.clients[2].Money; got != 100 {
+		t.Errorf("expected player 2 money unchanged 100, got %v", got)
+	}
+}
+
+func TestPeriodicIncrementGlobalStat(t *testing.T) {
+	def := &GameModeDefinition{
+		ID:         "counter_test",
+		Name:       "Counter Test",
+		Parameters: map[string]any{},
+		PeriodicChecks: []PeriodicCheck{
+			{
+				Name:          "tick_counter",
+				IntervalTicks: 1,
+				Action: map[string]any{
+					"type":   "increment_global_stat",
+					"stat":   StatGlobalMatchDurationTicks,
+					"amount": float64(1),
+				},
+			},
+		},
+	}
+	mode, err := NewJSONGameMode(def)
+	if err != nil {
+		t.Fatalf("build mode: %v", err)
+	}
+
+	server := NewGameServer()
+	ctx := newTestMatchContext(server, mode, 1)
+
+	for i := 0; i < 5; i++ {
+		ctx.Tick = uint64(i + 1)
+		mode.OnTick(ctx)
+	}
+
+	if got := server.stats.GetGlobal(StatGlobalMatchDurationTicks); got != 5 {
+		t.Errorf("expected match_duration_ticks 5, got %v", got)
+	}
+}
+
+func TestResourceRaceEndToEnd(t *testing.T) {
+	server := NewGameServer()
+	server.mapData = &MapData{Width: 20, Height: 10}
+
+	mode, err := LoadGameModeAndCreate("game_modes/resource_race.json")
+	if err != nil {
+		t.Fatalf("load mode: %v", err)
+	}
+	server.setGameMode(mode, mode.definition)
+	addTestClient(t, server, 1)
+	addTestClient(t, server, 2)
+
+	// Player 1 hits the resource goal; no generators so income won't overwrite
+	server.stats.Set(1, StatMoneyCurrent, 500.0)
+	server.stats.Set(2, StatMoneyCurrent, 100.0)
+
+	matchEndEvents := 0
+	server.eventBus.On(EventMatchEnded, func(e GameEvent) { matchEndEvents++ })
+
+	// A single tick should evaluate the win condition and end the match
+	server.gameTick()
+
+	if !server.gameOver {
+		t.Fatal("Expected match to end after goal reached")
+	}
+	if server.winnerId != 1 {
+		t.Fatalf("Expected winner 1, got %d", server.winnerId)
+	}
+	if matchEndEvents != 1 {
+		t.Fatalf("expected exactly 1 match.ended event, got %d", matchEndEvents)
+	}
 }

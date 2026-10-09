@@ -29,15 +29,6 @@
 
   "periodic_checks": [
     {
-      "name": "resource_generation",
-      "interval_ticks": 20,
-      "action": {
-        "type": "grant_resources",
-        "amount_per_building": 10,
-        "building_type": "generator"
-      }
-    },
-    {
       "name": "tick_counter",
       "interval_ticks": 1,
       "action": {

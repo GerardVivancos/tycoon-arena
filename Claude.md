@@ -203,14 +203,14 @@ Why this combination:
 
    ## Testing
 
-The project includes a comprehensive test framework with 56 test functions (55 unit + 1 scenario harness running 2 declarative scenarios):
-- **Unit tests**: Pathfinding, terrain passability, formations, collisions, event bus, statistics, rule engine, game modes
+The project includes a comprehensive test framework with 62 test functions (61 unit + 1 scenario harness running 2 declarative scenarios):
+- **Unit tests**: Pathfinding, terrain passability, formations, collisions, event bus, statistics, rule engine (incl. per-player self/opponent/any/id resolution), game modes (win/lose/periodic/E2E)
 - **Scenario tests**: Declarative JSON scenarios that run automatically
 
 **Quick start:**
 ```bash
 cd server
-go test -v                    # Run all 56 tests
+go test -v                    # Run all 62 tests
 go test -run TestAllScenarios # Run the scenario harness (2 scenarios)
 ```
 

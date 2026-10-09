@@ -1,8 +1,8 @@
 # Current Project State - Quick Reference
 
-**Last Updated:** 2025-10-09 (Phase 1 complete)
-**Current Work:** ✅ **Phase 1** of [IMPROVEMENT_PLAN.md](../../IMPROVEMENT_PLAN.md) — game modes wired into the tick loop (`game_over` protocol + client HUD)
-**Next Up:** Phase 2 — rule engine per-player resolution so shipped JSON modes can actually fire
+**Last Updated:** 2025-10-09 (Phase 2 complete)
+**Current Work:** ✅ **Phase 2** of [IMPROVEMENT_PLAN.md](../../IMPROVEMENT_PLAN.md) — rule engine per-player resolution; shipped JSON modes now winnable/losable in the live loop
+**Next Up:** Phase 3 — combat expansion (unit-vs-unit targeting + combat statistics)
 
 ---
 
@@ -23,22 +23,27 @@
 - ✅ Client-side prediction and interpolation
 - ✅ 40×30 tile maps with terrain (grass, rocks, obstacles)
 - ✅ Camera zoom (0.5× to 2.0×) and pan (WASD/arrows/trackpad)
-- ✅ **Comprehensive test suite** - 56 test functions passing
-  - 55 unit tests (pathfinding, formations, terrain, collisions, event bus,
-    statistics, rule engine, game modes, game-mode plumbing)
+- ✅ **Comprehensive test suite** - 62 test functions passing
+  - 61 unit tests (pathfinding, formations, terrain, collisions, event bus,
+    statistics, rule engine incl. per-player resolution, game modes incl.
+    win/lose/periodic/E2E, game-mode plumbing)
   - Scenario harness runs 2 declarative JSON scenarios end-to-end
   - `TestAllUnitsReceivePaths` ensures every unit in formation gets a path
 - ✅ **Strict test expectations** - Tests properly catch broken behavior
-- ✅ **Game modes wired into the loop (Phase 1)** - `main()` loads `resource_race`,
-  `gameTick()` evaluates win conditions each tick, `game_over` message + client
-  HUD (objective/victory/defeat), inputs/joins frozen after match end
-- ⚠️ **Shipped JSON modes can't fire yet** - rule engine lacks per-player
-  resolution (`player: "self"/"any"`) and `determineWinner` is a stub; lose
-  conditions are not evaluated in the live loop — Phase 2 closes this
+- ✅ **Game modes wired into the loop (Phases 1-2)** - `main()` loads `resource_race`,
+  `gameTick()` runs mode periodic checks + evaluates win/lose conditions each
+  tick, `game_over` message + client HUD (objective/victory/defeat),
+  inputs/joins frozen after match end. Rule engine resolves `player:"self"`/
+  `"opponent"`/`"any"`/numeric id; winner strategies `player_who_triggered`,
+  `highest_money`, `highest_stat` all work. The three shipped modes
+  (`resource_race`, `survival`, `timed_race`) can now actually end a match.
+- ✅ **Lose conditions live** - self-referencing rules (bankruptcy/elimination)
+  evaluated per player; lone survivor wins (`last_player_standing`); fresh
+  players seed `money_current` so bankruptcy never false-positives on join
 
 **Current Map:** Default JSON map `maps/default.json` (40×30 tiles, 7 rock obstacles)
 **Testing:** Full declarative test framework (Phase 1 & 2 complete)
-**Next Feature:** Rule engine per-player resolution (IMPROVEMENT_PLAN.md Phase 2)
+**Next Feature:** Combat expansion — unit-vs-unit targeting + combat stats (IMPROVEMENT_PLAN.md Phase 3)
 
 ---
 
@@ -173,28 +178,34 @@ cd server && go run main.go
 - **Server-side only**: Client receives current+next tile, not full path
 
 ### 11. Testing Framework ✅
-- **Unit tests**: 50 test functions (core, event bus, statistics, rule engine, game modes)
+- **Unit tests**: 61 unit test functions (core, event bus, statistics, rule engine
+  incl. per-player self/opponent/any/id, game modes incl. win/lose/periodic/E2E)
 - **Test maps**: 3 specialized maps (single rock, cluster, corridor)
 - **Declarative scenarios**: JSON-based test definitions
 - **Scenario runner**: Executes scenarios in isolated test server
 - **Test integration**: Auto-discovers and runs all scenarios with `go test`
 - **Example scenarios**: 2 working examples (both passing)
 
-### 12. Game Event & Mode Framework ✅ Wired (Phase 1) / ⚠️ Rules Pending Phase 2
+### 12. Game Event & Mode Framework ✅ (Phases 1-2 complete)
 - **Event bus** (`event_bus.go`): typed game events, synchronous pub/sub;
   `main.go` emits resource/build/attack/destroy events from the tick loop and command handlers
 - **Statistics** (`statistics.go`): per-player + global counters and time series,
   wired to the event bus via `setupStatisticsTracking()`
-- **Rule engine** (`rule_engine.go`): declarative comparison/logical rules parsed from JSON
+- **Rule engine** (`rule_engine.go`): declarative comparison/logical rules parsed from
+  JSON; `StatValue.Resolve` supports `player:"self"`, `"opponent"` (max excluding self),
+  `"any"` (aggregate max), a numeric id, or `""` (legacy direct id) via `RuleContext`'s
+  `CurrentPlayer`/`Players`
 - **Game modes** (`game_mode.go`, `game_modes/*.json`): `resource_race` (default, loaded
-  in `main()`), `survival`, `timed_race`; `gameTick()` → `checkMatchEnd()` (after unlock)
-  evaluates win conditions; `endMatch()` freezes inputs/joins, emits `match.ended`,
+  in `main()`), `survival`, `timed_race`; `gameTick()` → `mode.OnTick(ctx)` (periodic
+  `grant_resources`/`increment_global_stat`) then `checkMatchEnd()` (both **after** unlock)
+  evaluate win **and** lose conditions; winner strategies `player_who_triggered`
+  (first self-rule pass over sorted players), `highest_money`, `highest_stat`
+  (max-holder, ties→lowest id); `endMatch()` freezes inputs/joins, emits `match.ended`,
   and broadcasts `game_over` (handled by `NetworkManager.gd`/`GameController.gd`,
   `GameStatus` HUD label)
-- **Gap (Phase 2)**: per-player rule resolution (`player: "self"/"any"`) and
-  `determineWinner` winner strategy are stubs, so the shipped JSON modes cannot
-  actually win a match yet; lose conditions are intentionally unevaluated live
-  (self-referencing rules would false-positive against player 0's empty stats)
+- **Per-player + deterministic**: rules iterate clients via `sortedClientIDs()` (ascending),
+  so the same game state always produces the same winner; lose conditions crown the lone
+  survivor (`last_player_standing`) and are skipped in solo matches
 
 ---
 
@@ -212,8 +223,9 @@ realtime-game-engine/
 │   ├── game_test.go         # Core unit tests (16)
 │   ├── event_bus_test.go    # Event bus tests (6)
 │   ├── statistics_test.go   # Statistics tests (7)
-│   ├── rule_engine_test.go  # Rule engine tests (12)
-│   ├── game_mode_test.go    # Game mode tests (9)
+│   ├── rule_engine_test.go  # Rule engine tests (13)
+│   ├── game_mode_test.go    # Game mode tests (14)
+│   ├── game_mode_plumbing_test.go # Game-mode server wiring tests (5)
 │   ├── scenario_test.go     # Scenario harness + adapter
 │   ├── testutil/
 │   │   ├── scenario.go           # Scenario schema + loader
@@ -333,8 +345,9 @@ realtime-game-engine/
 ### Current Limitations
 1. **Formation edge cases**: Units can still pile up slightly at map edges when blocked
 2. **Single terrain layer**: No multi-tile features (forests, mountains) yet
-3. **No win conditions in live play**: Game-mode framework exists (see section 12)
-   but `gameTick()` never checks win/lose conditions — IMPROVEMENT_PLAN.md Phases 1-2
+3. **Only three shipped modes**: `resource_race`, `survival`, `timed_race` are now
+   winnable/losable live (Phases 1-2), but periodic income was removed in favor of the
+   core `$10/s`/generator loop; richer modes/params are future work
 4. **Combat is buildings-only**: `handleAttackCommand` only accepts `generator`
    targets; units cannot fight units — IMPROVEMENT_PLAN.md Phase 3
 5. **No fog of war**: All terrain visible at all times
@@ -396,6 +409,27 @@ realtime-game-engine/
 
 ## Recently Completed
 
+### Game Modes Live + Rule Engine Per-Player Resolution ✅ (Phase 2, 2025-10-09)
+- ✅ **Per-player rule resolution** (`rule_engine.go`) — `RuleContext` gained
+  `CurrentPlayer`/`Players`; `StatValue` gained `PlayerRef` and resolves `"self"`,
+  `"opponent"` (max excl. self), `"any"` (aggregate max), numeric id, `""` (legacy)
+- ✅ **Winner strategies** (`game_mode.go`) — removed the map-iteration
+  `determineWinner` stub; `CheckWinConditions` honors `player_who_triggered`
+  (first self-rule pass over sorted players), `highest_money`, `highest_stat`
+  (max-holder, ties→lowest id) — deterministic via `sortedClientIDs()`
+- ✅ **Periodic checks** — `executePeriodicCheck` implements `grant_resources`
+  (via new `grantMoneyToPlayer`/`countBuildings`) and `increment_global_stat`;
+  `gameTick()` now runs `mode.OnTick(ctx)` after unlock, then `checkMatchEnd()`
+- ✅ **Live lose conditions** — `checkMatchEnd` evaluates lose rules per player and
+  crowns the lone survivor (`last_player_standing`); `handleHello` seeds
+  `money_current` so bankruptcy never false-positives on join
+- ✅ **Mode JSONs** — per-player win rules moved `"any"`→`"self"`
+  (`resource_race`, `survival`); removed redundant `grant_resources` periodic
+  checks from all three (core loop already pays `$10/s`/generator)
+- ✅ **+6 tests (62 green)** — per-player resolution, rewritten win/survival/timed
+  tests with real clients, last-player-standing, fresh-player-not-broke,
+  periodic grant/increment, and `TestResourceRaceEndToEnd` (one `gameTick()` ends match)
+
 ### Formation Movement Fix + Test Overhaul ✅ (2025-10-14 Evening)
 - ✅ **Fixed friendly unit collision** - Teammates pass through each other (enemies still block)
   - **Bug**: Units in same formation blocked each other → leader got stuck
@@ -455,7 +489,8 @@ realtime-game-engine/
   - **Note**: Current implementation is acceptable - this is polish, not critical
 
 ### Potential Features
-- [ ] Win conditions (resource threshold, building destruction, etc.)
+- [x] Win conditions (resource threshold, building destruction, timed highest-money) —
+      shipped as JSON game modes (Phases 1-2, `game_modes/*.json`)
 - [ ] Different unit types (ranged, melee, fast scouts)
 - [ ] Multi-tile terrain features (forests 3×3, mountains 5×5)
 - [ ] Fog of war / line of sight

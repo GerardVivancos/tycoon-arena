@@ -345,10 +345,13 @@ result.
 - `objectiveText` - the mode's objective (informational)
 - `victoryMessage` / `defeatMessage` - mode UI strings for win/lose display
 
-**Note (Phase 1):** the game-mode plumbing is live, but the shipped JSON modes
-(`resource_race`, `survival`, `timed_race`) cannot fire until Phase 2 gives the
-rule engine per-player resolution (`player: "self"/"any"`). Lose conditions are
-not evaluated in the live loop yet.
+**Note (Phase 2 — live):** the shipped JSON modes (`resource_race`, `survival`,
+`timed_race`) are now winnable/losable. The rule engine resolves
+`player: "self"` / `"opponent"` / `"any"` / numeric id per player, and winner
+strategies `player_who_triggered`, `highest_money`, `highest_stat` select a
+deterministic winner (ties → lowest id). Lose conditions are evaluated per
+player each tick; when exactly one player survives, the match ends with
+`conditionId: "last_player_standing"` (winner = the survivor).
 
 ---
 

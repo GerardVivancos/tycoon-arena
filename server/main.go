@@ -321,15 +321,82 @@ func (s *GameServer) buildMatchContext() *MatchContext {
 	}
 }
 
-// checkMatchEnd evaluates the active game mode's win conditions and finalizes
-// the match if one is met.
+// matchActive reports whether a game mode is installed and the match is live.
+func (s *GameServer) matchActive() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.gameMode != nil && !s.gameOver
+}
+
+// sortedClientIDs returns the current client IDs in ascending order so that
+// rule evaluation and winner selection are deterministic.
+func (s *GameServer) sortedClientIDs() []uint32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make([]uint32, 0, len(s.clients))
+	for id := range s.clients {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+// countBuildings returns the number of buildings owned by owner. If
+// buildingType is non-empty it filters by type; otherwise it counts anything
+// with a building footprint.
+func (s *GameServer) countBuildings(owner uint32, buildingType string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, e := range s.entities {
+		if e.OwnerId != owner {
+			continue
+		}
+		if buildingType != "" {
+			if e.Type == buildingType && e.FootprintWidth > 0 {
+				count++
+			}
+		} else if e.FootprintWidth > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+// grantMoneyToPlayer adds amount to a player's money (under lock) and emits
+// the money_changed event so the money_current statistic stays in sync.
+func (s *GameServer) grantMoneyToPlayer(playerID uint32, amount float32, reason string) {
+	s.mu.Lock()
+	client, ok := s.clients[playerID]
+	if !ok {
+		s.mu.Unlock()
+		return
+	}
+	oldMoney := client.Money
+	client.Money += amount
+	newMoney := client.Money
+	tick := s.tick
+	s.mu.Unlock()
+
+	s.eventBus.Emit(GameEvent{
+		Type:      EventPlayerMoneyChanged,
+		Timestamp: time.Now(),
+		Tick:      tick,
+		ActorID:   playerID,
+		Data: map[string]any{
+			"oldMoney": float64(oldMoney),
+			"newMoney": float64(newMoney),
+			"delta":    float64(amount),
+			"reason":   reason,
+		},
+	})
+}
+
+// checkMatchEnd evaluates the active game mode's win and lose conditions and
+// finalizes the match when one is met.
 //
 // IMPORTANT: must be called WITHOUT s.mu held — the rule engine and winner
 // resolution take s.mu internally, and Go RWMutex is not reentrant.
-//
-// NOTE: Lose conditions are intentionally not evaluated in Phase 1 — the rule
-// engine cannot resolve player:"self" per player yet (Phase 2), so
-// self-referencing lose rules would false-positive at tick 1.
 func (s *GameServer) checkMatchEnd() {
 	s.mu.RLock()
 	mode := s.gameMode
@@ -350,8 +417,36 @@ func (s *GameServer) checkMatchEnd() {
 		Tick:     tick,
 	}
 
+	// Win conditions first (they name their own winner).
 	if result := mode.CheckWinConditions(ctx); result != nil && result.HasWinner {
 		s.endMatch(result)
+		return
+	}
+
+	// Lose conditions: if exactly one player survives the set of losers, they
+	// win. Skip in solo matches (a lone player's own lose rule is meaningless).
+	players := s.sortedClientIDs()
+	if len(players) < 2 {
+		return
+	}
+
+	var survivors []uint32
+	losers := 0
+	for _, p := range players {
+		if mode.CheckLoseConditions(ctx, p) {
+			losers++
+		} else {
+			survivors = append(survivors, p)
+		}
+	}
+
+	if losers > 0 && len(survivors) == 1 {
+		s.endMatch(&WinResult{
+			HasWinner:     true,
+			WinnerID:      survivors[0],
+			ConditionID:   "last_player_standing",
+			ConditionName: "Last Player Standing",
+		})
 	}
 }
 
@@ -629,8 +724,12 @@ func (s *GameServer) gameTick() {
 		Data: s.marshalData(snapshot),
 	})
 
-	// Evaluate game-mode win conditions outside the state lock (the rule
-	// engine takes s.mu internally; calling it under lock would deadlock).
+	// Run game-mode periodic checks and evaluate win/lose conditions outside
+	// the state lock (the rule engine and mode hooks take s.mu internally;
+	// calling them under the lock would deadlock).
+	if s.matchActive() {
+		s.gameMode.OnTick(s.buildMatchContext())
+	}
 	s.checkMatchEnd()
 }
 
@@ -741,6 +840,10 @@ func (s *GameServer) handleHello(hello HelloMessage, clientAddr *net.UDPAddr) {
 	}
 
 	s.clients[clientId] = client
+
+	// Seed the money_current statistic so lose conditions (e.g. bankruptcy)
+	// don't false-positive before the first income/build event fires.
+	s.stats.Set(clientId, StatMoneyCurrent, float64(StartingMoney))
 
 	log.Printf("Client %d (%s) connected from %s with %d workers", clientId, hello.PlayerName, clientAddr.String(), len(ownedUnits))
 

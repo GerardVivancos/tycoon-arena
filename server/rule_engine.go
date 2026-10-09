@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
 // Rule represents a declarative condition that can be evaluated
@@ -17,6 +18,15 @@ type RuleContext struct {
 	EventBus  *EventBus
 	Tick      uint64
 	Variables map[string]any // For parameterized rules
+
+	// CurrentPlayer is the player the rule is being evaluated for
+	// (resolves "self"/"opponent"). Set per-player by CheckWinConditions/
+	// CheckLoseConditions when iterating participants.
+	CurrentPlayer uint32
+
+	// Players is the full list of participant IDs (sorted). Used to resolve
+	// "any" (aggregate max) and "opponent" (max excluding CurrentPlayer).
+	Players []uint32
 }
 
 // ValueExpression represents a value that can be resolved at runtime
@@ -37,16 +47,52 @@ func (v *ConstantValue) Resolve(ctx *RuleContext) float64 {
 
 // StatValue represents a player statistic
 type StatValue struct {
-	Stat     string
-	PlayerID uint32 // 0 means "any", specific ID, or special values
-	Global   bool   // If true, this is a global stat
+	Stat string
+	// PlayerRef is the JSON player selector: "any", "self", "opponent", a
+	// numeric player id, or "" (empty = resolve via PlayerID directly).
+	PlayerRef string
+	// PlayerID is used when PlayerRef is "" or a numeric id.
+	PlayerID uint32
+	Global   bool // If true, this is a global stat
 }
 
 func (v *StatValue) Resolve(ctx *RuleContext) float64 {
 	if v.Global {
 		return ctx.Stats.GetGlobal(v.Stat)
 	}
-	return ctx.Stats.Get(v.PlayerID, v.Stat)
+
+	switch v.PlayerRef {
+	case "self":
+		return ctx.Stats.Get(ctx.CurrentPlayer, v.Stat)
+	case "opponent":
+		return maxStatAcross(ctx, v.Stat, ctx.CurrentPlayer, true)
+	case "any":
+		return maxStatAcross(ctx, v.Stat, 0, false)
+	case "":
+		// Explicit numeric id (or legacy direct construction)
+		return ctx.Stats.Get(v.PlayerID, v.Stat)
+	default:
+		// Numeric player id stored as a string
+		return ctx.Stats.Get(v.PlayerID, v.Stat)
+	}
+}
+
+// maxStatAcross returns the maximum value of stat across ctx.Players,
+// optionally excluding one player. Returns 0 when no players qualify.
+func maxStatAcross(ctx *RuleContext, stat string, exclude uint32, hasExclude bool) float64 {
+	var best float64
+	found := false
+	for _, p := range ctx.Players {
+		if hasExclude && p == exclude {
+			continue
+		}
+		val := ctx.Stats.Get(p, stat)
+		if !found || val > best {
+			best = val
+			found = true
+		}
+	}
+	return best
 }
 
 // ParameterValue represents a parameter from game mode definition
@@ -237,17 +283,23 @@ func ParseValue(valueJSON ValueJSON) (ValueExpression, error) {
 
 	// Stat value
 	if valueJSON.Stat != "" {
-		playerID := uint32(0) // Default to "any"
-		if valueJSON.Player != "" && valueJSON.Player != "any" {
-			// For now, we'll use 0 to represent "any"
-			// In a real implementation, this would resolve based on context
-			playerID = 0
+		playerRef := valueJSON.Player
+		var playerID uint32
+
+		// A numeric selector resolves to that specific player id
+		if playerRef != "" && playerRef != "any" && playerRef != "self" && playerRef != "opponent" {
+			if id, err := strconv.ParseUint(playerRef, 10, 32); err == nil {
+				playerID = uint32(id)
+			} else {
+				return nil, fmt.Errorf("invalid player selector %q", playerRef)
+			}
 		}
 
 		return &StatValue{
-			Stat:     valueJSON.Stat,
-			PlayerID: playerID,
-			Global:   valueJSON.Global,
+			Stat:      valueJSON.Stat,
+			PlayerRef: playerRef,
+			PlayerID:  playerID,
+			Global:    valueJSON.Global,
 		}, nil
 	}
 

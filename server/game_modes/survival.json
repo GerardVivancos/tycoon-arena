@@ -17,7 +17,7 @@
         "type": "comparison",
         "left": {"stat": "total_buildings", "global": true},
         "operator": "==",
-        "right": {"stat": "buildings_placed", "player": "any"}
+        "right": {"stat": "buildings_placed", "player": "self"}
       },
       "winner": "player_who_triggered"
     }
@@ -41,17 +41,7 @@
     }
   ],
 
-  "periodic_checks": [
-    {
-      "name": "resource_generation",
-      "interval_ticks": 20,
-      "action": {
-        "type": "grant_resources",
-        "amount_per_building": 10,
-        "building_type": "generator"
-      }
-    }
-  ],
+  "periodic_checks": [],
 
   "event_triggers": [],
 

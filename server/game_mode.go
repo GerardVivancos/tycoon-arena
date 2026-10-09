@@ -173,6 +173,20 @@ func (m *JSONGameMode) OnTick(ctx *MatchContext) {
 	}
 }
 
+// newRuleContext builds a RuleContext for evaluating rules for a given
+// "current" player (0 for aggregate/global evaluation).
+func (m *JSONGameMode) newRuleContext(ctx *MatchContext, players []uint32, currentPlayer uint32) *RuleContext {
+	return &RuleContext{
+		Server:        ctx.Server,
+		Stats:         ctx.Stats,
+		EventBus:      ctx.EventBus,
+		Tick:          ctx.Tick,
+		Variables:     m.definition.Parameters,
+		CurrentPlayer: currentPlayer,
+		Players:       players,
+	}
+}
+
 // Query hooks
 func (m *JSONGameMode) CheckWinConditions(ctx *MatchContext) *WinResult {
 	// Sort by priority (lower first)
@@ -180,22 +194,36 @@ func (m *JSONGameMode) CheckWinConditions(ctx *MatchContext) *WinResult {
 		return m.compiledWinRules[i].condition.Priority < m.compiledWinRules[j].condition.Priority
 	})
 
-	for _, compiled := range m.compiledWinRules {
-		ruleCtx := &RuleContext{
-			Server:    ctx.Server,
-			Stats:     ctx.Stats,
-			EventBus:  ctx.EventBus,
-			Tick:      ctx.Tick,
-			Variables: m.definition.Parameters,
-		}
+	// Sorted for deterministic iteration / winner selection
+	players := ctx.Server.sortedClientIDs()
 
-		if compiled.rule.Evaluate(ruleCtx) {
-			winnerID := m.determineWinner(ctx, compiled.condition)
-			return &WinResult{
-				HasWinner:     true,
-				WinnerID:      winnerID,
-				ConditionID:   compiled.condition.ID,
-				ConditionName: compiled.condition.Name,
+	for _, compiled := range m.compiledWinRules {
+		switch compiled.condition.Winner {
+		case "highest_money":
+			// Global/aggregated condition; winner is the richest player
+			if compiled.rule.Evaluate(m.newRuleContext(ctx, players, 0)) {
+				if winner := m.playerWithHighestStat(ctx, StatMoneyCurrent, players); winner != 0 {
+					return winResult(compiled.condition, winner)
+				}
+			}
+
+		case "highest_stat":
+			if compiled.rule.Evaluate(m.newRuleContext(ctx, players, 0)) {
+				stat := ruleLeftStat(compiled.rule)
+				if stat != "" {
+					if winner := m.playerWithHighestStat(ctx, stat, players); winner != 0 {
+						return winResult(compiled.condition, winner)
+					}
+				}
+			}
+
+		default: // "player_who_triggered"
+			// Evaluate per-player; the first (lowest-id) player whose
+			// self-based rule passes is the winner.
+			for _, p := range players {
+				if compiled.rule.Evaluate(m.newRuleContext(ctx, players, p)) {
+					return winResult(compiled.condition, p)
+				}
 			}
 		}
 	}
@@ -204,23 +232,51 @@ func (m *JSONGameMode) CheckWinConditions(ctx *MatchContext) *WinResult {
 }
 
 func (m *JSONGameMode) CheckLoseConditions(ctx *MatchContext, playerID uint32) bool {
+	players := ctx.Server.sortedClientIDs()
 	for _, compiled := range m.compiledLoseRules {
-		ruleCtx := &RuleContext{
-			Server:    ctx.Server,
-			Stats:     ctx.Stats,
-			EventBus:  ctx.EventBus,
-			Tick:      ctx.Tick,
-			Variables: m.definition.Parameters,
-		}
-
-		// Check if this player meets the lose condition
-		// TODO: Modify rule context to evaluate for specific player
-		if compiled.rule.Evaluate(ruleCtx) {
+		if compiled.rule.Evaluate(m.newRuleContext(ctx, players, playerID)) {
 			return true
 		}
 	}
-
 	return false
+}
+
+// playerWithHighestStat returns the player with the maximum value of stat
+// (ties broken by lowest id, given players is sorted ascending). 0 if none.
+func (m *JSONGameMode) playerWithHighestStat(ctx *MatchContext, stat string, players []uint32) uint32 {
+	var best uint32
+	var bestVal float64
+	found := false
+	for _, p := range players {
+		v := ctx.Stats.Get(p, stat)
+		if !found || v > bestVal {
+			bestVal = v
+			best = p
+			found = true
+		}
+	}
+	return best
+}
+
+// winResult builds a WinResult from a condition and winner id.
+func winResult(cond *WinCondition, winner uint32) *WinResult {
+	return &WinResult{
+		HasWinner:     true,
+		WinnerID:      winner,
+		ConditionID:   cond.ID,
+		ConditionName: cond.Name,
+	}
+}
+
+// ruleLeftStat returns the stat name of a comparison rule's left operand
+// (used by the "highest_stat" winner strategy); "" if not a stat comparison.
+func ruleLeftStat(rule Rule) string {
+	if cr, ok := rule.(*ComparisonRule); ok {
+		if sv, ok := cr.Left.(*StatValue); ok {
+			return sv.Stat
+		}
+	}
+	return ""
 }
 
 func (m *JSONGameMode) GetObjectiveText(ctx *MatchContext, playerID uint32) string {
@@ -253,24 +309,53 @@ func (m *JSONGameMode) GetID() string          { return m.definition.ID }
 func (m *JSONGameMode) GetName() string        { return m.definition.Name }
 func (m *JSONGameMode) GetDescription() string { return m.definition.Description }
 
-// Helper methods
-func (m *JSONGameMode) determineWinner(ctx *MatchContext, condition *WinCondition) uint32 {
-	// Simple implementation: return first player (for "any" conditions)
-	// In a real implementation, this would check condition.Winner and resolve appropriately
-
-	ctx.Server.mu.RLock()
-	defer ctx.Server.mu.RUnlock()
-
-	for clientID := range ctx.Server.clients {
-		return clientID
+// executePeriodicCheck runs a periodic action. Supports:
+//   - grant_resources: {type, amount_per_building, building_type}
+//   - increment_global_stat: {type, stat, amount}
+func (m *JSONGameMode) executePeriodicCheck(ctx *MatchContext, check *PeriodicCheck) {
+	if check.Action == nil {
+		return
 	}
 
-	return 0
+	actionType, _ := check.Action["type"].(string)
+	switch actionType {
+	case "grant_resources":
+		m.grantResources(ctx, check.Action)
+	case "increment_global_stat":
+		m.incrementGlobalStat(ctx, check.Action)
+	}
 }
 
-func (m *JSONGameMode) executePeriodicCheck(ctx *MatchContext, check *PeriodicCheck) {
-	// For now, this is a placeholder
-	// In a full implementation, this would execute the action defined in check.Action
+func (m *JSONGameMode) grantResources(ctx *MatchContext, action map[string]any) {
+	amountPerBuilding, ok := action["amount_per_building"].(float64)
+	if !ok || amountPerBuilding <= 0 {
+		return
+	}
+	buildingType, _ := action["building_type"].(string)
+
+	for _, p := range ctx.Server.sortedClientIDs() {
+		count := ctx.Server.countBuildings(p, buildingType)
+		if count == 0 {
+			continue
+		}
+		amount := amountPerBuilding * float64(count)
+		// grantMoneyToPlayer updates client.Money and emits the money_changed
+		// event, which keeps the money_current stat in sync.
+		ctx.Server.grantMoneyToPlayer(p, float32(amount), "periodic_grant")
+		ctx.Stats.Increment(p, StatResourcesGenerated, amount)
+	}
+}
+
+func (m *JSONGameMode) incrementGlobalStat(ctx *MatchContext, action map[string]any) {
+	stat, _ := action["stat"].(string)
+	if stat == "" {
+		return
+	}
+	amount, ok := action["amount"].(float64)
+	if !ok {
+		amount = 1
+	}
+	ctx.Stats.IncrementGlobal(stat, amount)
 }
 
 // ===== Loading Game Modes from Files =====

@@ -16,7 +16,7 @@
       "priority": 1,
       "rule": {
         "type": "comparison",
-        "left": {"stat": "money_current", "player": "any"},
+        "left": {"stat": "money_current", "player": "self"},
         "operator": ">=",
         "right": {"param": "resource_goal"}
       },
@@ -48,17 +48,7 @@
     }
   ],
 
-  "periodic_checks": [
-    {
-      "name": "resource_generation",
-      "interval_ticks": 20,
-      "action": {
-        "type": "grant_resources",
-        "amount_per_building": 10,
-        "building_type": "generator"
-      }
-    }
-  ],
+  "periodic_checks": [],
 
   "event_triggers": [],
 

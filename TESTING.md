@@ -23,7 +23,7 @@ go test -v -run TestAllScenarios/navigate_around_rock
 
 ## Test Coverage
 
-### Unit Tests (55 tests)
+### Unit Tests (61 tests)
 
 **Pathfinding:**
 - `TestPathfindingAroundSingleRock` - Routes around 1 obstacle
@@ -56,16 +56,22 @@ go test -v -run TestAllScenarios/navigate_around_rock
 - `TestStatisticsGlobalCounters`, `TestStatisticsTimeSeries`, `TestStatisticsReset`
 - `TestStatisticsEventIntegration`
 
-**Rule Engine (12 tests)** — `server/rule_engine_test.go`:
+**Rule Engine (13 tests)** — `server/rule_engine_test.go`:
 - `TestComparisonRuleBasic`, `TestComparisonRuleAllOperators`
 - `TestLogicalRuleAnd`, `TestLogicalRuleOr`, `TestLogicalRuleNot`, `TestNestedLogicalRules`
 - `TestGlobalStats`, `TestParameterValues`, `TestAlwaysRules`
 - `TestParseRuleFromJSON`, `TestParseLogicalRuleFromJSON`, `TestParseRuleWithParameter`
+- `TestStatValuePerPlayerResolution` - self/opponent/any/numeric-id selector resolution
 
-**Game Modes (9 tests)** — `server/game_mode_test.go`:
+**Game Modes (14 tests)** — `server/game_mode_test.go`:
 - `TestLoadGameMode`, `TestNewJSONGameMode`, `TestGameModeWinCondition`, `TestGameModeObjectiveText`
 - `TestGameModeStatistics`, `TestSurvivalGameMode`, `TestTimedRaceGameMode`
 - `TestGameModePeriodicChecks`, `TestGameModeLifecycleHooks`
+- `TestLoseConditionLastPlayerStanding` - lone survivor wins via live lose rules
+- `TestLoseConditionFreshPlayerNotBroke` - seeded `money_current` prevents false bankruptcy
+- `TestPeriodicGrantResources` - `grant_resources` pays per owned building + syncs stat
+- `TestPeriodicIncrementGlobalStat` - `increment_global_stat` advances the tick counter
+- `TestResourceRaceEndToEnd` - one `gameTick()` ends the match with the correct winner
 
 **Game Mode Plumbing (5 tests)** — `server/game_mode_plumbing_test.go`:
 - `TestGameServerGameModePlumbing` - win condition in tick loop ends match with a winner

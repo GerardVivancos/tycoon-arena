@@ -34,12 +34,13 @@ and an updated context doc (`.claude/docs/CURRENT_STATE.md`) per `CLAUDE.md`.
 ## Phase 1 — Wire game modes into the running game (PLUMBING ONLY — approved 2025-10-09)
 
 **Objective:** Wire the game-mode layer into the live loop end-to-end (load mode,
-check win conditions each tick, broadcast `game_over`, client UI). The real JSON
-modes load/display but only become *winnable* in Phase 2 — the rule engine cannot
-yet resolve `player:"self"/"any"` per player. Until then, lose conditions are
-**deliberately not evaluated** in the live loop (self-referencing rules like
-`money_current <= 0` resolve against player 0's empty stats and would
-false-positive at tick 1). Plumbing is proven with a purpose-built test mode.
+check win conditions each tick, broadcast `game_over`, client UI). At Phase 1
+time the real JSON modes load/display but only became *winnable* in Phase 2 —
+the rule engine could not yet resolve `player:"self"/"any"` per player, so lose
+conditions were **deliberately not evaluated** in the live loop (self-referencing
+rules would false-positive at tick 1). Plumbing was proven with a purpose-built
+test mode. **(Phase 2 has since enabled per-player resolution and live lose
+evaluation — see below.)**
 
 - [x] **1.1** `GameServer`: add `gameMode`, `gameModeDef`, `gameOver`, `winnerId`
       fields; `setGameMode()`; `buildMatchContext()`; `main()` loads
@@ -74,18 +75,41 @@ ends the match (manual Godot check left to the user per project convention).
 ## Phase 2 — Fix rule engine & game-mode logic gaps
 
 **Objective:** Correct the stubs so declarative rules behave as documented.
+Shipped modes are now genuinely winnable/losable in the live loop.
 
-- [ ] **2.1** `rule_engine.go`: resolve `player: "self" / "opponent" / "all" / <id>`
-      in `StatValue.Resolve` and `ParseValue` so per-player win/lose rules work.
-- [ ] **2.2** `game_mode.determineWinner` (`game_mode.go:257`): honor `condition.Winner`
-      (`player_who_triggered`, `highest_money`, `highest_stat`) and select deterministically
-      (no map-iteration ordering).
-- [ ] **2.3** `executePeriodicCheck` (`game_mode.go:271`): implement `grant_resources` and
-      `increment_global_stat` actions; wire the `match_duration_ticks` counter.
-- [ ] **2.4** Make `CheckLoseConditions` and `GetObjectiveText` player-aware.
+- [x] **2.1** `rule_engine.go`: `RuleContext` gains `CurrentPlayer` + `Players`;
+      `StatValue` gains `PlayerRef` and `Resolve` handles `"self"` /
+      `"opponent"` (max excluding self) / `"any"` (aggregate max) / numeric id /
+      `""` (legacy direct id). `ParseValue` maps the JSON `player` selector and
+      rejects unknown selectors. ✅ (2025-10-09)
+- [x] **2.2** `game_mode.go`: removed the map-iteration `determineWinner` stub.
+      `CheckWinConditions` now honors `condition.Winner` — `player_who_triggered`
+      iterates sorted players (first self-rule pass wins), `highest_money` /
+      `highest_stat` evaluate the rule once then pick the max-holder via
+      `playerWithHighestStat` (ties → lowest id, deterministic). ✅ (2025-10-09)
+- [x] **2.3** `executePeriodicCheck` implements `grant_resources` (owner building
+      count × `amount_per_building`, via new `grantMoneyToPlayer` + `countBuildings`
+      helpers) and `increment_global_stat`; `gameTick()` now calls
+      `mode.OnTick(ctx)` after unlock (adjacent to `checkMatchEnd`). ✅ (2025-10-09)
+- [x] **2.4** `CheckLoseConditions(ctx, playerID)` sets `CurrentPlayer` so
+      self-referencing rules work; `checkMatchEnd` evaluates lose conditions and
+      crowns the lone survivor (`last_player_standing`), skipping solo matches.
+      `handleHello` seeds `money_current` so bankruptcy can't false-positive. ✅ (2025-10-09)
+- [x] **2.5** JSON modes: per-player win rules moved from `"any"` to `"self"`
+      (`resource_race` money, `survival` buildings); removed the redundant
+      `grant_resources` periodic checks from all three modes (core loop already
+      pays `$10/s`/generator — double-count avoided). `timed_race` keeps its
+      `increment_global_stat` tick counter. ✅ (2025-10-09)
+- [x] **2.6** Tests (+6, 62 green): `TestStatValuePerPlayerResolution`
+      (self/opponent/any/id); rewrote `TestGameModeWinCondition` /
+      `TestSurvivalGameMode` / `TestTimedRaceGameMode` for real clients +
+      per-player stats; added `TestLoseConditionLastPlayerStanding`,
+      `TestLoseConditionFreshPlayerNotBroke`, `TestPeriodicGrantResources`,
+      `TestPeriodicIncrementGlobalStat`, `TestResourceRaceEndToEnd` (one
+      `gameTick()` ends the match). ✅ (2025-10-09)
 
-**Verify:** extend `rule_engine_test.go` + `game_mode_test.go` with per-player and
-periodic-check cases; `go test -v` all pass.
+**Verify:** `gofmt -l .` empty, `go vet ./...` clean, `go test -count=1 ./...`
+62/62 green (2025-10-09).
 
 ---
 
@@ -126,6 +150,10 @@ periodic-check cases; `go test -v` all pass.
 - [x] Phase 1 — wire game modes (done 2025-10-09: mode loaded in main(), win check in
       tick loop, `game_over` protocol + client HUD, 5 new tests; 56 tests green.
       Note: shipped JSON modes fire only after Phase 2 per-player rule resolution)
-- [ ] Phase 2 — rule engine fixes
+- [x] Phase 2 — rule engine fixes (done 2025-10-09: per-player rule resolution
+      self/opponent/any/id; winner strategies player_who_triggered/highest_money/
+      highest_stat; periodic grant_resources + increment_global_stat wired into
+      tick; live lose conditions + lone-survivor; modes winnable/losable; +6 tests,
+      62 green)
 - [ ] Phase 3 — combat expansion
 - [ ] Phase 4 — concurrency hardening
